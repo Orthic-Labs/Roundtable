@@ -60,3 +60,18 @@ Five spec items verified as not yet implemented; tracked in `.agent/reconcile.js
 - `tools/roundtable/ops/observability.md` (log field schema, sampling, on-call runbook)
 
 These are blockers for the per-scope ship gates and ship with the scaffolding as documented debt.
+
+## Push to Orthic-Labs
+
+The repo is staged at `/tmp/claude/roundtable-push/.git` with the work-tree at `./` (the `/Volumes/D/claude/roundtable` directory). Three commits on `main`, 47 files, 6.5K insertions. Remote `orthic` points at `https://github.com/Orthic-Labs/roundtable`.
+
+```bash
+# Re-auth (gh auth is currently invalid on this machine)
+gh auth login --hostname github.com --with-token < orthic-token.txt
+
+# Push
+git --git-dir=/tmp/claude/roundtable-push --work-tree=/Volumes/D/claude/roundtable \
+  push -u orthic main
+```
+
+The Mac cannot reach `github.com` from this shell (DNS fails); once the user reaches a network with auth, the push runs from any terminal that has both paths.
