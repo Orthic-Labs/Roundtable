@@ -19,8 +19,10 @@ _*
 _test.txt
 _mockups/
 
-# Blueprint workspace artifacts (regenerable, not source of truth)
-.agent/
+# Blueprint workspace artifacts (regenerable, not source of truth).
+# .agent/okf/ is the OKF bundle — portable into CodeRight and any OKF-aware agent — and IS tracked.
+.agent/*
+!.agent/okf/
 .blueprint/
 
 # IDE
