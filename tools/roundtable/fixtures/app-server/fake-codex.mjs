@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+function send(o){process.stdout.write(JSON.stringify(o)+"\n")}
+let buf="";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data",(c)=>{buf+=c;let i;while((i=buf.indexOf("\n"))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(!line.trim())continue;let r;try{r=JSON.parse(line)}catch{continue}const{id,method,params}=r;if(method==="initialize"){send({jsonrpc:"2.0",id,result:{serverInfo:{name:"fake-codex",version:"0.0.1"},capabilities:{}}});return}if(method==="thread/start"){const t=params&&params.threadId?params.threadId:randomUUID();send({jsonrpc:"2.0",method:"turn/started",params:{threadId:t,turnId:randomUUID()}});setTimeout(()=>send({jsonrpc:"2.0",method:"turn/completed",params:{threadId:t,status:"completed"}}),10);send({jsonrpc:"2.0",id,result:{threadId:t}});return}if(method==="turn/start"){send({jsonrpc:"2.0",id,result:{turnId:randomUUID(),status:"in_progress"}});setTimeout(()=>send({jsonrpc:"2.0",method:"turn/completed",params:{turnId:randomUUID(),status:"completed"}}),10);return}if(method==="shutdown"){send({jsonrpc:"2.0",id,result:{ok:true}});setTimeout(()=>process.exit(0),5);return}send({jsonrpc:"2.0",id,error:{code:-32601,message:"not impl: "+method}})}});
