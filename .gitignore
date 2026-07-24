@@ -1,0 +1,35 @@
+# Build artifacts
+target/
+**/target/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.cache/
+**/.cache/
+
+# OS noise
+.DS_Store
+**/.DS_Store
+_*
+!**/_mockups/**
+!_mockups/**
+
+# Local artifacts not meant for the repo
+_test.txt
+_mockups/
+
+# Blueprint workspace artifacts (regenerable, not source of truth)
+.agent/
+.blueprint/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment
+.env
+.env.local
+**/.env
+**/.env.local
