@@ -237,6 +237,12 @@ async fn handle_hub_event(
                 tracing::warn!(%approval_id, error = %e, "approving the denied action failed");
             }
         }
+        // Routed to its waiting caller inside the hub driver and consumed there, so it never
+        // reaches the event stream. Matched explicitly rather than with a wildcard: a new event
+        // variant should break this match and get a decision, not be silently ignored.
+        HubEvent::QueryResult { request_id, .. } => {
+            tracing::warn!(%request_id, "query result reached the event stream; this should be impossible");
+        }
         // Cancellation contract §2: the operator canceled a delivery this node is running.
         // Translate to Codex's native interrupt. Work already done is NOT rolled back (§5) — the
         // interrupt only prevents further work, and anything already posted stays in the room.
@@ -323,12 +329,47 @@ async fn handle_ipc_request(
             }
         }
         IpcRequest::HandoffCreate { from_seat_id, to_alias, body, evidence_refs } => {
-            // The hub's Handoff command needs a target seat UUID; the channel only knows an alias,
-            // and this node has no room roster to resolve it against. Resolving aliases node-side
-            // would mean caching the roster and keeping it fresh — not built, so this is refused
-            // rather than guessed.
-            let _ = (from_seat_id, to_alias, body, evidence_refs);
-            IpcResponse::err(id, "handoff.create is not implemented: the node cannot resolve a seat alias")
+            // The hub's Handoff command needs a target seat UUID and the channel only knows an
+            // alias. The node still holds no roster — it asks the hub for one per handoff rather
+            // than caching it, because a cached roster goes stale exactly when it matters (a seat
+            // added or detached mid-session) and a handoff to a stale seat_id fails silently.
+            let Some(room_id) = routing.rooms.lock().await.get(&from_seat_id).copied() else {
+                return IpcResponse::err(id, "unknown seat — this node has no delivery for it");
+            };
+            if !client.owns_seat(from_seat_id).await {
+                return IpcResponse::err(id, "this node does not own that seat");
+            }
+            let roster = match client
+                .query(serde_json::json!({ "roster_read": { "room_id": room_id } }))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => return IpcResponse::err(id, format!("could not read the room roster: {e}")),
+            };
+            let to_seat_id = roster["seats"]
+                .as_array()
+                .and_then(|seats| {
+                    seats
+                        .iter()
+                        .find(|s| s["alias"].as_str() == Some(to_alias.as_str()))
+                        .and_then(|s| s["id"].as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                });
+            let Some(to_seat_id) = to_seat_id else {
+                return IpcResponse::err(id, format!("no seat with alias '{to_alias}' in this room"));
+            };
+            let (response, rx) = tokio::sync::oneshot::channel();
+            client.send(ClientCommand::Handoff {
+                from_seat_id, to_seat_id, body, evidence_refs, response,
+            }).await;
+            match rx.await {
+                Ok(Ok(handoff_id)) => IpcResponse::ok(
+                    id,
+                    serde_json::json!({ "handoff_id": handoff_id, "to_seat_id": to_seat_id }),
+                ),
+                Ok(Err(e)) => IpcResponse::err(id, format!("hub rejected the handoff: {e}")),
+                Err(_) => IpcResponse::err(id, "hub dropped the handoff without responding"),
+            }
         }
         IpcRequest::ApprovalVerdict { .. } => {
             IpcResponse::err(id, "approval.verdict is not implemented for claude seats")
@@ -338,9 +379,28 @@ async fn handle_ipc_request(
             // and no admin credential with which to create one.
             IpcResponse::err(id, "seats are enrolled on the hub (ops/enrol-node.mjs), not over IPC")
         }
-        IpcRequest::TranscriptRead { .. } | IpcRequest::TranscriptSearch { .. } => {
-            // The node holds no transcript — the hub does, and the node has no read path to it.
-            IpcResponse::err(id, "transcript reads are not implemented on the node")
+        // The node holds no transcript; the hub does. Both of these forward to it over the same
+        // authenticated socket the node already has, and the hub refuses any room this node holds
+        // no seat in — the node is not an operator and must not read the whole hub.
+        IpcRequest::TranscriptRead { room_id, after_seq, limit, .. } => {
+            match client.query(serde_json::json!({
+                "transcript_read": {
+                    "room_id": room_id,
+                    "after_seq": after_seq.unwrap_or(0),
+                    "limit": limit,
+                },
+            })).await {
+                Ok(v) => IpcResponse::ok(id, v),
+                Err(e) => IpcResponse::err(id, format!("transcript.read failed: {e}")),
+            }
+        }
+        IpcRequest::TranscriptSearch { room_id, query, limit } => {
+            match client.query(serde_json::json!({
+                "transcript_search": { "room_id": room_id, "query": query, "limit": limit },
+            })).await {
+                Ok(v) => IpcResponse::ok(id, v),
+                Err(e) => IpcResponse::err(id, format!("transcript.search failed: {e}")),
+            }
         }
         IpcRequest::Ping { nonce } => IpcResponse::ok(id, serde_json::json!({ "pong": nonce })),
     }

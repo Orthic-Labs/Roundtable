@@ -22,6 +22,14 @@ export const HubFrame = Object.freeze({
   SEAT_DETACH: 'seat.detach',
   SEAT_INTERRUPT: 'seat.interrupt',
   PING: 'ping',
+  /**
+   * The answer to a `node.query`, correlated by `request_id`.
+   *
+   * This is the ONLY hub->node frame that is a response rather than an event. Every other node
+   * command is fire-and-forget by design (see `handleNodeMessagePost`), which is why reads needed
+   * a new frame pair rather than reusing one.
+   */
+  QUERY_RESULT: 'query.result',
 });
 
 /** Frames a node sends to the hub. */
@@ -33,6 +41,15 @@ export const NodeFrame = Object.freeze({
   HANDOFF_CREATE: 'node.handoff.create',
   APPROVAL_REQUEST: 'node.approval.request',
   SEAT_PRESENCE: 'node.seat.presence',
+  /**
+   * A read request from a node, answered with exactly one `query.result`.
+   *
+   * The node holds no transcript and no room roster of its own — it only ever sees the deliveries
+   * addressed to it — so `transcript.read`, `transcript.search` and alias resolution for
+   * `handoff.create` all needed a way to ask the hub. Payload is the serde-tagged
+   * `{ request_id, query: { <kind>: {...} } }`, matching how `message_post` is already shaped.
+   */
+  QUERY: 'node.query',
 });
 
 const HUB_FRAMES = new Set(Object.values(HubFrame));

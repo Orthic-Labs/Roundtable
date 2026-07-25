@@ -234,6 +234,20 @@ export class Store {
     return this.#db.prepare('SELECT * FROM seats WHERE id = ?').get(seatId) ?? null;
   }
 
+  /**
+   * Does this node own a seat in this room?
+   *
+   * The authorisation predicate for node reads. A node authenticates as itself, not as an
+   * operator, so it must not be able to read a room it was never seated in — without this a single
+   * compromised or buggy node could pull every transcript on the hub.
+   */
+  nodeHasSeatInRoom(nodeId, roomId) {
+    const row = this.#db
+      .prepare('SELECT 1 AS present FROM seats WHERE node_id = ? AND room_id = ? LIMIT 1')
+      .get(nodeId, roomId);
+    return row !== undefined;
+  }
+
   seatByAlias(roomId, alias) {
     return this.#db.prepare('SELECT * FROM seats WHERE room_id = ? AND alias = ?').get(roomId, alias) ?? null;
   }
@@ -304,6 +318,27 @@ export class Store {
     return this.#db
       .prepare('SELECT * FROM messages WHERE room_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?')
       .all(roomId, afterSeq, capped);
+  }
+
+  /**
+   * Substring search over a room's message bodies, most recent first.
+   *
+   * Deliberately `LIKE` and not FTS5: the transcript is small (one room is a working session, not
+   * a corpus), and an FTS virtual table would need its own migration and sync triggers for a
+   * feature whose whole job is "find the message where we decided X". Revisit if a room ever grows
+   * past the point where a scan is cheap.
+   *
+   * `escapeLike` matters — an agent searching for a literal `%` or `_` (a percentage, a
+   * snake_case symbol) would otherwise get wildcard behaviour it never asked for.
+   */
+  searchMessages(roomId, query, { limit = 20 } = {}) {
+    const capped = Math.min(Math.max(1, limit), 100);
+    const escaped = String(query).replace(/[\\%_]/g, (c) => `\\${c}`);
+    return this.#db.prepare(
+      `SELECT * FROM messages
+        WHERE room_id = ? AND body LIKE '%' || ? || '%' ESCAPE '\\'
+        ORDER BY seq DESC LIMIT ?`,
+    ).all(roomId, escaped, capped);
   }
 
   /**

@@ -13,16 +13,29 @@ Two things are already known-broken and are NOT your fault — read
 
 ## The blocker you will hit in the first 30 seconds
 
-**`roundtable-node` does not compile on Windows today.** `crates/roundtable-node/src/ipc.rs`
-imports `tokio::net::{UnixListener, UnixStream}` unconditionally (line 16) and uses them in
-`IpcServer::start` and `handle_connection`. Those types do not exist on Windows.
+**`roundtable-node` does not compile on Windows today** — but as of 2026-07-26 the reason is much
+smaller than it was, and the remaining gap is one named function.
 
-This is not a lurking edge case — it is a hard build failure, and it is the whole of the Windows
-work. Everything else in the node is already portable.
+**What was already done on the Mac** (verified green: `cargo test --workspace` → 73 passed, the
+same as before the change, so it is behaviour-preserving on Unix):
 
-**Verified, not assumed:** tokio exports both types under `#[cfg(all(unix, feature = "net"))]`
-(`tokio/src/net/mod.rs`, via the `cfg_net_unix!` macro), and the import at `ipc.rs:16` carries no
-cfg gate.
+- The Unix-only imports in `ipc.rs` are now `#[cfg(unix)]`-gated. `UnixStream` is gone entirely.
+- `handle_connection` is now **generic** — `<S: AsyncRead + AsyncWrite + Send + 'static>` — and
+  uses `tokio::io::split` instead of `UnixStream::into_split`. A `NamedPipeServer` satisfies those
+  bounds, so this function needs **no further change**; it is shared verbatim by both platforms.
+- The bind/accept loop moved into `IpcServer::spawn_listener`, which is `#[cfg(unix)]`. Binding
+  still happens inside `start()` so a bind/permissions failure surfaces from `start()` rather than
+  from a detached task.
+- The socket-file pre-clean in `start()` and the unlink in `stop()` are `#[cfg(unix)]`. A pipe name
+  is not a filesystem entry, so `remove_file` on it would only ever be an error.
+
+**What is left:** write `#[cfg(windows)] fn spawn_listener` — the one missing arm. On Windows the
+build now fails with "no method named `spawn_listener`", pointing straight at it. See "The fix".
+
+**Verified, not assumed:** tokio exports the Unix types under `#[cfg(all(unix, feature = "net"))]`
+(`tokio/src/net/mod.rs`, via the `cfg_net_unix!` macro); `tokio::io::split` requires only
+`AsyncRead + AsyncWrite` (no `Unpin`); and `NamedPipeServer` has **no `into_split`**, which is why
+the generic split was necessary rather than cosmetic.
 
 **You must build ON Windows.** Cross-compiling from the Mac was attempted and does not work:
 `cargo check --target x86_64-pc-windows-msvc` dies in `ring`'s build script long before reaching
@@ -49,18 +62,39 @@ Named pipes are the Windows equivalent, and tokio ships them:
 
 The shape that will hurt least:
 
-1. Put the two transports behind a small `#[cfg]` split in `ipc.rs` — a `listen()` returning a
-   stream of connections and a per-connection `(reader, writer)` pair. `handle_connection` itself is
-   already generic over `AsyncRead + AsyncWrite` in everything but its signature; it needs no logic
-   change, only a type change.
+1. **Done already** — the `#[cfg]` seam exists and `handle_connection` is generic. All that remains
+   is `#[cfg(windows)] fn spawn_listener`, with the same signature as the Unix one. Its loop differs
+   in shape: a named pipe is not a listener you accept repeatedly, it is one server instance per
+   client. So: create an instance with `ServerOptions::new().first_pipe_instance(true)` (the `true`
+   only on the first — it makes a squatter on the name fail loudly instead of silently sharing it),
+   `connect().await` it, then **create the next instance before spawning the handler for the current
+   one**, or you drop the client that arrives during handling.
 2. `config.ipc_socket_path` stays a single field. On Windows it holds a pipe name like
    `\\.\pipe\roundtable-<node-id>`; on Unix it stays a filesystem path. Do not add a second config
    field — one path, interpreted per platform, keeps `install-*.ps1`/`install-macos.sh` symmetrical.
-3. **Security is not automatic.** The Unix path sets mode `0600` (`ipc.rs`, the `#[cfg(unix)]` block
-   in `start()`), which is what keeps the socket owner-only. A named pipe created with default
-   options is far more permissive. Set an explicit DACL granting only the current user, or you have
-   opened a local privilege boundary — anything on that machine could drive Adrian's agents. The
-   existing test `unix_socket_owner_only` is the one to mirror.
+3. **Security is not automatic, and this is the part to not rush.** The Unix path sets mode `0600`
+   (in `spawn_listener`), which is what keeps the socket owner-only. A named pipe created with
+   default security is far more permissive: `ServerOptions::create()` passes NULL security
+   attributes, and Win32 documents that default as granting full control to SYSTEM/Administrators/
+   creator-owner **and read access to Everyone and the anonymous account**. Read access is enough to
+   siphon `delivery.assign` bodies — the room transcript — off the machine.
+
+   So the only usable creation path is the `unsafe` `create_with_security_attributes_raw`, with a
+   descriptor you build. The least error-prone construction is SDDL rather than hand-rolled ACLs:
+   get the current user's SID (`OpenProcessToken` → `GetTokenInformation(TokenUser)` →
+   `ConvertSidToStringSidW`) and build `D:P(A;;GA;;;<sid>)` — `P` protects the DACL from
+   inheritance, and the single ACE grants GENERIC_ALL to exactly that user — then
+   `ConvertStringSecurityDescriptorToSecurityDescriptorW`. Needs `windows-sys` under
+   `[target.'cfg(windows)'.dependencies]` (0.59/0.60/0.61 are all already in the local cargo cache).
+
+   **Make it fail closed:** if the descriptor cannot be built, return `Err` and refuse to serve.
+   Never fall back to `ServerOptions::create()` — a permissive pipe that works looks exactly like a
+   correct one. Mirror `unix_socket_owner_only` with a Windows test that reads the descriptor back
+   and asserts the DACL holds only that one SID.
+
+   This was deliberately **not** written on the Mac: it is unverifiable `unsafe` FFI here (the
+   cross-compile dies in `ring`, confirmed), and blind unsafe security code that compiles is worse
+   than none. Write it on the machine that can compile and run it.
 4. `packages/claude-channel` needs **no change**. Node's `net.connect()` accepts a `\\.\pipe\...`
    name transparently, and `src/ipc.ts` already passes `socketPath` straight through.
 
@@ -118,38 +152,36 @@ Hub URL is `wss://roundtable.spoares.com/node/connect`. No tunnel, no VPN; the n
 Read this before you run the test suite, or you will spend an afternoon debugging something you
 did not cause.
 
-- **`packages/hub/src/replay.test.mjs` wedges the whole run at process exit, often.** Measured on a
-  clean checkout, macOS, no Windows code involved:
+- ~~**`packages/hub/src/replay.test.mjs` wedges the whole run at process exit.**~~ **FIXED
+  2026-07-26 — run the suite as one command now: `node --test src/*.test.mjs` → 100 passed.**
 
-  | Command | Result |
-  |---|---|
-  | `node --test src/*.test.mjs` | wedged 3 runs out of 3 |
-  | same, excluding `replay.test.mjs` | **97/97, 3 runs out of 3** |
-  | `node --test src/replay.test.mjs` alone | passes 3/3, wedges ~1 run in 4-6 |
+  It was never an environment quirk and never really a leak. The first test asserted
+  `hub.flushDeliveries() === 1`, but the hub also auto-flushes on node connect from a deferred
+  `setTimeout(..., 0)`; the two raced, and whichever ran second returned 0. That failed roughly one
+  run in three, and a *failing* test never reached its trailing `await hub.close()` — which is what
+  left the listening server and two sockets that stopped the runner exiting. The unclosed server was
+  the symptom; the flaky assertion was the cause. Now the test asserts the delivery's actual state
+  (`'sent'`) rather than which flush won, and cleanup moved into `t.after()` so it runs on failure.
+  Verified: 12/12 clean for that file, 8/8 clean for the full suite. Details in STATUS.md.
 
-  Every assertion passes first — the tests are green and the process then simply does not exit, so
-  `node --test` sits there with nothing left to report. Measured from inside a hanging run with
-  `process.getActiveResourcesInfo()`: the child holds `TCPServerWrap: 1` and `TCPSocketWrap: 2` — a
-  hub server that never finished closing.
+  Still true, and worth keeping: do not "fix" any future hang with `server.unref()` or a bounded
+  resolve. That was tried and reverted — it made things worse and resolved `close()` before the
+  server had actually closed.
 
-  **Practical: run `node --test $(ls src/*.test.mjs | grep -v replay)` for a reliable 97, then run
-  `replay.test.mjs` separately for its 3.** That is the honest working setup today.
+- ~~**`transcript.read`, `transcript.search` and `handoff.create` return "not implemented".**~~
+  **IMPLEMENTED 2026-07-26.** The node now has a read path to the hub: a `node.query` /
+  `query.result` frame pair over the socket it is already authenticated on, correlated by
+  `request_id`. It is the only request/response pair in the protocol — every other node command is
+  fire-and-forget. Reads are scoped hub-side to rooms the node holds a seat in (a node authenticates
+  as itself, not as an operator), and an unknown room returns the same `room_not_accessible` as an
+  unauthorised one so a node cannot probe which rooms exist. `handoff.create` resolves its target
+  alias against a roster read per handoff rather than caching one, because a cached roster is stale
+  exactly when it matters. Nothing here is platform-specific — it works on Windows as soon as the
+  node compiles there.
 
-  Four real leaks behind this class of hang have already been found and fixed (see STATUS.md,
-  "The test-runner hang"); this is the residue. **If a suite run wedges, retry it before assuming
-  your change did it.** If you want to fix it properly, that would be welcome — but do not let it
-  block the Windows work, and do not "fix" it with `server.unref()` or a bounded resolve. That was
-  tried and reverted: it made the flakiness worse AND resolved `close()` before the server had
-  actually closed.
-
-- **`transcript.read`, `transcript.search` and `handoff.create` return explicit "not implemented"**
-  over IPC. Not a Windows gap and not a stub to fill in casually: the node holds neither a
-  transcript nor a room roster, so serving them means giving it a read path back to the hub — a new
-  API surface plus a caching question. `handoff.create` additionally needs alias-to-UUID resolution,
-  which needs that roster.
-
-- **The IPC methods that DO work are `message.reply` and `ping`.** That is enough for a Claude seat
-  to receive a delivery and answer it, which is the whole Claude flow today.
+- **Working IPC methods: `message.reply`, `transcript.read`, `transcript.search`, `handoff.create`,
+  `ping`.** Still refused: `session.join`/`session.leave` (seats are enrolled with
+  `ops/enrol-node.mjs`, and the node holds no admin credential) and `approval.verdict`.
 
 ## What a healthy run looks like
 
@@ -157,12 +189,12 @@ Before you change anything, get a baseline on the machine you are working on:
 
 ```
 cargo test --workspace                                  → 73 passed, 0 failed
-node --test $(ls src/*.test.mjs | grep -v replay)       → 97 passed, 0 failed
-node --test src/replay.test.mjs                         → 3 passed  (may wedge; retry)
+node --test src/*.test.mjs                              → 100 passed, 0 failed
 ```
 
-100 hub tests in total. If those numbers do not match on a clean checkout, something is wrong with
-the environment rather than with your change — sort that out first.
+If those numbers do not match on a clean checkout, something is wrong with the environment rather
+than with your change — sort that out first. A wedge at exit is no longer expected: if you see one,
+it is new, and the first thing to check is whether a test failed before its `t.after()` cleanup.
 
 ## How you will know it worked
 

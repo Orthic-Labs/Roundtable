@@ -37,8 +37,8 @@ export function createChannel(opts: ClaudeChannelOptions): { server: McpServer; 
   );
   server.tool(
     "roundtable_read",
-    "Read transcript messages for a room since an optional seq.",
-    { room_id: z.string().uuid(), since_seq: z.number().int().nonnegative().default(0), limit: z.number().int().positive().max(500).default(100) },
+    "Read transcript messages for a room after an optional seq.",
+    { room_id: z.string().uuid(), after_seq: z.number().int().nonnegative().default(0), limit: z.number().int().positive().max(500).default(100) },
     async (args) => {
       const p = TranscriptReadParams.parse(args);
       const resp = await client.request("transcript_read", p as unknown as Record<string, unknown>);
@@ -67,8 +67,8 @@ export function createChannel(opts: ClaudeChannelOptions): { server: McpServer; 
   );
   server.tool(
     "roundtable_handoff",
-    "Hand off a task from one seat to another with optional evidence refs.",
-    { from_seat_id: z.string().uuid(), to_seat_id: z.string().uuid(), body: z.string().min(1).max(64 * 1024), evidence_refs: z.array(z.string()).default([]) },
+    "Hand off a task to another seat in the room, addressed by its alias.",
+    { from_seat_id: z.string().uuid(), to_alias: z.string().min(1), body: z.string().min(1).max(64 * 1024), evidence_refs: z.array(z.string()).default([]) },
     async (args) => {
       const p = HandoffCreateParams.parse(args);
       const resp = await client.request("handoff_create", p as unknown as Record<string, unknown>);

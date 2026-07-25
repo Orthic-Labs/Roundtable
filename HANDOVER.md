@@ -33,9 +33,8 @@ Proven on 2026-07-26: posted "Say exactly: THIRD" into the room, read `THIRD` ba
 production database as an agent chat message. Real binary, real hub, real Codex, no fixtures.
 
 ```
-cargo test --workspace              → 73 passed, 0 failed
-node --test $(ls src/*.test.mjs|grep -v replay) → 97 passed, 0 failed
-node --test src/replay.test.mjs     → 3 passed  (may wedge at exit; see below)
+cargo test --workspace              → 76 passed, 0 failed
+node --test src/*.test.mjs          → 107 passed, 0 failed
 ```
 
 ## Deployment gotchas — all four cost real time, none are obvious
@@ -84,12 +83,17 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
 
 ## What is NOT done
 
-- **Claude seats work, partially.** A delivery reaches a connected channel over the node's 0600
-  unix socket and its reply posts back to the room — verified live with Codex and Claude seats
-  answering in the same room. Still unimplemented over IPC: handoff.create, approval.verdict,
-  session.join/leave, transcript.read/search (each returns an explicit error, not a fake success).
-- **Windows** — never built or run. `roundtable-node` does not even COMPILE there: `ipc.rs`
-  imports `UnixListener`/`UnixStream` unconditionally. Full brief: [`WINDOWS-HANDOFF.md`](./WINDOWS-HANDOFF.md).
+- **Claude seats work.** A delivery reaches a connected channel over the node's 0600 unix socket
+  and its reply posts back to the room — verified live with Codex and Claude seats answering in the
+  same room. `transcript.read`, `transcript.search` and `handoff.create` were implemented on
+  2026-07-26 via the `node.query`/`query.result` frame pair (see STATUS.md, "The node read path").
+  Still unimplemented over IPC: `approval.verdict` and `session.join/leave` — each returns an
+  explicit error, not a fake success.
+- **Windows** — never built or run, and `roundtable-node` still does not COMPILE there, but the
+  gap is now one function: `ipc.rs` was refactored on 2026-07-26 so the platform seam is a single
+  `#[cfg(unix)] spawn_listener`, with `handle_connection` already generic over the transport. What
+  remains is the Windows arm plus its owner-only pipe DACL. Full brief:
+  [`WINDOWS-HANDOFF.md`](./WINDOWS-HANDOFF.md).
 - The node never advances its own replay cursor (always reconnects at 0). Harmless now that the hub
   refuses to replay terminal deliveries, but it is not doing its job.
 - Streaming deltas and most `ThreadItem` variants are not surfaced.
@@ -139,19 +143,24 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
    asked for) — verify before assuming it's needed for anything; the live site runs from
    `~/sites/rightsites/coderight`, untouched.
 
-## The test-runner hang — mostly fixed, not fully
+## The test-runner hang — SOLVED (2026-07-26)
 
-The old advice ("run dispatch.test.mjs first, it's environmental") was wrong and is retired. Four
-real leaks have been found and fixed, one of them a production defect: the hub could not shut down
-(`server.close()` waits on WebSockets that never close, so SIGTERM stalled too), `WsConnection` had
-no `destroy()`, `close()` only knew about handshaken connections, and `dispatch.test.mjs` had a
-frame race that lost same-tick frames.
+The old advice ("run dispatch.test.mjs first, it's environmental") was wrong and is retired. So is
+the "97 + 3" split that replaced it. Nothing here was ever environmental: five real defects, one of
+them a production defect — the hub could not shut down (`server.close()` waits on WebSockets that
+never close, so SIGTERM stalled too), `WsConnection` had no `destroy()`, `close()` only knew about
+handshaken connections, and `dispatch.test.mjs` had a frame race that lost same-tick frames.
 
-Still open: `replay.test.mjs` leaves a hub server unclosed, which wedges the combined run at
-process exit. Measured: `src/*.test.mjs` wedged 3 of 3 runs; the same set excluding replay passed
-97/97 3 of 3; replay alone passes but wedges ~1 in 4-6. Every assertion passes first — the hang is
-purely the process not exiting, so it costs time, not correctness. From inside a hanging run the
-child holds a `TCPServerWrap` and two `TCPSocketWrap`s.
+The fifth and last was the residual wedge, and the earlier diagnosis had it backwards. The
+unclosed hub server was a **symptom**: `replay.test.mjs`'s first test asserted
+`hub.flushDeliveries() === 1`, but the hub also auto-flushes on node connect from a deferred
+`setTimeout(..., 0)`, so the two raced and the loser returned 0. That assertion failed ~1 run in 3,
+and a failing test never reached its trailing `await hub.close()` — leaving a listening server and
+two sockets that stopped `node --test` exiting. Fixed by asserting the delivery's actual state
+instead of which flush won, and by moving cleanup into `t.after()` so it runs on failure too.
+
+Verified after the fix on this machine (Node v26.4.0): `replay.test.mjs` 12 clean runs of 12, and
+the full `node --test src/*.test.mjs` 8 clean runs of 8 at 100 passed. Run it as one command.
 
 ## Known gotchas (already paid for once — don't rediscover)
 
@@ -188,6 +197,4 @@ touching `codex.rs` or `fake-codex.mjs` again — it documents exactly what was 
 ## Suggested next step
 
 1. **nginx** — the one command above, Adrian's sudo.
-2. **Finish the IPC surface** — transcript.read/search and handoff.create need the node to reach
-   the hub for data it does not hold (a room roster, a transcript). Everything else is done.
-3. Windows node installer (Adrian is handling the timing on this one).
+2. Windows node installer (Adrian is handling the timing on this one).

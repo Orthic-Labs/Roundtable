@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -198,6 +199,17 @@ pub enum HubEvent {
     /// Cancellation contract §2 — the operator canceled a delivery this node is actively running.
     /// The node translates it to the provider's native interrupt (Codex `turn/interrupt`).
     SeatInterrupt { delivery_id: Uuid, reason: String },
+    /// The hub's answer to a `node.query`, correlated by `request_id`.
+    ///
+    /// The only hub->node frame that is a response rather than an event: it is routed to the
+    /// waiting caller through `pending_queries` and deliberately not published on the event
+    /// stream, which carries things that happen TO this node, not replies it asked for.
+    QueryResult {
+        request_id: Uuid,
+        ok: bool,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    },
     Ping { nonce: String },
 }
 
@@ -205,6 +217,8 @@ pub enum HubEvent {
 #[serde(rename_all = "snake_case")]
 pub enum HubCommand {
     Hello(HelloFrame),
+    /// A read request. Answered by exactly one `query.result` carrying the same `request_id`.
+    QueryRequest { request_id: Uuid, query: Value },
     DeliveryAck { delivery_id: Uuid },
     DeliveryState {
         delivery_id: Uuid,
@@ -284,6 +298,14 @@ fn pseudo_jitter(attempt: u64) -> u64 {
 
 #[derive(Debug)]
 pub enum ClientCommand {
+    /// Ask the hub to read something this node does not hold: transcript, search, room roster.
+    ///
+    /// Unlike every other command here, this one waits for an answer — the node has no local copy
+    /// of a room, so there is nothing to resolve optimistically against.
+    Query {
+        query: Value,
+        response: oneshot::Sender<NodeResult<Value>>,
+    },
     PostMessage {
         seat_id: Uuid,
         room_id: Uuid,
@@ -355,6 +377,7 @@ impl HubClient {
             transport_factory: client.transport_factory.clone(),
             command_rx,
             event_tx,
+            pending_queries: HashMap::new(),
         };
         let policy = ReconnectPolicy::from_config(&driver.cfg);
         tokio::spawn(async move {
@@ -395,6 +418,22 @@ impl HubClient {
     pub async fn send(&self, cmd: ClientCommand) {
         let _ = self.command_tx.send(cmd);
     }
+
+    /// Ask the hub to read something, and wait for the answer.
+    ///
+    /// `query` is the serde-tagged body, e.g. `{"transcript_read": {"room_id": ..., "limit": 50}}`.
+    /// Errors rather than hangs if the driver is gone or the connection dies mid-flight, because
+    /// the caller is a blocking MCP tool call inside a live agent session.
+    pub async fn query(&self, query: Value) -> NodeResult<Value> {
+        let (response, rx) = oneshot::channel();
+        if self.command_tx.send(ClientCommand::Query { query, response }).is_err() {
+            return Err(NodeError::Provider("node is shutting down".into()));
+        }
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(NodeError::Provider("hub dropped the query without answering".into())),
+        }
+    }
 }
 
 struct HubDriver {
@@ -405,6 +444,12 @@ struct HubDriver {
     transport_factory: Arc<dyn Fn() -> NodeResult<Box<dyn HubTransport>> + Send + Sync>,
     command_rx: mpsc::UnboundedReceiver<ClientCommand>,
     event_tx: mpsc::UnboundedSender<HubEvent>,
+    /// In-flight `node.query` requests, keyed by the `request_id` the answer will carry.
+    ///
+    /// Drained with an error whenever a connection ends: a caller blocked on a read whose answer
+    /// died with the socket would otherwise wait forever, and that caller is an MCP tool call
+    /// inside a live Claude session.
+    pending_queries: HashMap<Uuid, oneshot::Sender<NodeResult<Value>>>,
 }
 
 impl HubDriver {
@@ -414,6 +459,11 @@ impl HubDriver {
             match self.connect_and_drive().await {
                 Ok(()) => { info!("hub connection closed cleanly"); attempt = 0; }
                 Err(e) => warn!(error = %e, "hub connection failed"),
+            }
+            // Answers to in-flight reads died with the socket. Fail them explicitly — the caller
+            // is a blocking MCP tool call, and silence there is indistinguishable from a hang.
+            for (_, tx) in self.pending_queries.drain() {
+                let _ = tx.send(Err(NodeError::Provider("hub connection lost".into())));
             }
             while self.command_rx.try_recv().is_ok() {}
             let delay = policy.delay_ms(attempt);
@@ -477,7 +527,13 @@ impl HubDriver {
                 // dropped; the drop-and-continue behavior itself is unchanged.
                 let kind = env.kind.clone();
                 let evt: Option<HubEvent> = match kind.as_str() {
-                    "delivery.assign" | "approval.resolve" | "seat.detach" | "ping" => {
+                    // "seat.interrupt" was missing from this list while `HubEvent::SeatInterrupt`
+                    // was fully handled in main.rs: the hub sent the frame, this arm fell through
+                    // to the catch-all, and every operator cancellation was dropped with nothing
+                    // but a "unrecognized hub frame kind" line. Cancellation looked implemented
+                    // end to end and did nothing on the node.
+                    "delivery.assign" | "approval.resolve" | "seat.detach" | "seat.interrupt"
+                    | "query.result" | "ping" => {
                         match serde_json::from_value(env.payload) {
                             Ok(evt) => Some(evt),
                             Err(e) => {
@@ -514,6 +570,23 @@ impl HubDriver {
                 evt = reader_rx.recv() => {
                     match evt {
                         Some(e) => {
+                            // A query answer belongs to one waiting caller, not to the event
+                            // stream. Routed and consumed here.
+                            if let HubEvent::QueryResult { request_id, ok, result, error } = &e {
+                                if let Some(tx) = self.pending_queries.remove(request_id) {
+                                    let outcome = if *ok {
+                                        Ok(result.clone().unwrap_or(Value::Null))
+                                    } else {
+                                        Err(NodeError::Provider(
+                                            error.clone().unwrap_or_else(|| "query failed".into()),
+                                        ))
+                                    };
+                                    let _ = tx.send(outcome);
+                                } else {
+                                    warn!(%request_id, "query result for an unknown request; dropping");
+                                }
+                                continue;
+                            }
                             if let HubEvent::DeliveryAssign { ref delivery, .. } = e {
                                 let mut s = self.state.lock().await;
                                 s.upsert_delivery(crate::state::DeliveryRecord {
@@ -548,6 +621,19 @@ impl HubDriver {
 
     async fn handle_command(&mut self, cmd: Option<ClientCommand>, transport_arc: &Arc<dyn HubTransport>) -> NodeResult<()> {
         match cmd {
+            Some(ClientCommand::Query { query, response }) => {
+                let request_id = Uuid::now_v7();
+                let frame = HubCommand::QueryRequest { request_id, query };
+                let bytes = encode_frame("node.query", &frame)?;
+                // Register BEFORE the write: the answer can arrive on the reader task the moment
+                // the bytes land, and a result for an unregistered request is dropped.
+                self.pending_queries.insert(request_id, response);
+                if transport_arc.send_frame(&bytes).await.is_err() {
+                    if let Some(tx) = self.pending_queries.remove(&request_id) {
+                        let _ = tx.send(Err(NodeError::Provider("hub connection lost".into())));
+                    }
+                }
+            }
             Some(ClientCommand::PostMessage { seat_id, room_id, kind, body, reply_to, response }) => {
                 if !self.owned_seats.lock().await.contains(&seat_id) {
                     let _ = response.send(Err(NodeError::UnknownSeat(seat_id)));
@@ -666,6 +752,67 @@ mod tests {
             reconnect_base_ms: 1000,
             heartbeat_ms: 50,
             heartbeat_offline_after_ms: 200,
+        }
+    }
+
+    /// The hub reads `frame.payload.query_request` (packages/hub/src/server.mjs). serde's external
+    /// tagging is what puts it there, and nothing in Rust would catch a rename — the symptom would
+    /// be a silently ignored read in production, so pin the wire key here.
+    #[test]
+    fn query_request_serializes_under_the_key_the_hub_reads() {
+        let cmd = HubCommand::QueryRequest {
+            request_id: Uuid::now_v7(),
+            query: serde_json::json!({ "transcript_read": { "room_id": "r", "limit": 10 } }),
+        };
+        let v: Value = serde_json::to_value(&cmd).unwrap();
+        assert!(v.get("query_request").is_some(), "hub reads payload.query_request; got {v}");
+        assert_eq!(v["query_request"]["query"]["transcript_read"]["limit"], 10);
+    }
+
+    /// Mirror of the above for the response direction: the hub sends
+    /// `payload.query_result = { request_id, ok, result, error }`.
+    #[test]
+    fn query_result_parses_the_frame_the_hub_sends() {
+        let request_id = Uuid::now_v7();
+        let payload = serde_json::json!({
+            "query_result": {
+                "request_id": request_id,
+                "ok": true,
+                "result": { "messages": [] },
+                "error": null,
+            },
+        });
+        let evt: HubEvent = serde_json::from_value(payload).unwrap();
+        match evt {
+            HubEvent::QueryResult { request_id: got, ok, result, error } => {
+                assert_eq!(got, request_id);
+                assert!(ok);
+                assert!(error.is_none());
+                assert!(result.unwrap()["messages"].is_array());
+            }
+            other => panic!("expected QueryResult, got {other:?}"),
+        }
+    }
+
+    /// A refusal must parse too — `room_not_accessible` is how the hub denies a room this node
+    /// holds no seat in, and it arrives with `result: null`.
+    #[test]
+    fn query_result_parses_a_refusal() {
+        let payload = serde_json::json!({
+            "query_result": {
+                "request_id": Uuid::now_v7(),
+                "ok": false,
+                "result": null,
+                "error": "room_not_accessible",
+            },
+        });
+        let evt: HubEvent = serde_json::from_value(payload).unwrap();
+        match evt {
+            HubEvent::QueryResult { ok, error, .. } => {
+                assert!(!ok);
+                assert_eq!(error.as_deref(), Some("room_not_accessible"));
+            }
+            other => panic!("expected QueryResult, got {other:?}"),
         }
     }
 

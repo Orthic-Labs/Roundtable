@@ -10,15 +10,16 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{NodeError, NodeResult};
+use crate::NodeResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
@@ -113,28 +114,48 @@ impl IpcServer {
     }
 
     pub async fn start(&self) -> NodeResult<()> {
+        let (tx, rx) = mpsc::unbounded_channel::<(Uuid, IpcNotification)>();
+        let rx = Arc::new(Mutex::new(rx));
+        let request_tx = self.request_tx.lock().await.clone();
+        // Bind before publishing anything: a bind or permissions failure has to surface out of
+        // `start()` itself rather than out of a detached task nobody awaits. `unix_socket_owner_only`
+        // depends on that, and so does the caller deciding the node cannot serve.
+        let task = self.spawn_listener(rx, request_tx)?;
+        *self.notify_tx.lock().await = Some(tx);
+        *self.listener_task.lock().await = Some(task);
+        info!(path = %self.socket_path.display(), "ipc server started");
+        Ok(())
+    }
+
+    /// Bind the platform's local transport and serve every connection it yields.
+    ///
+    /// This is the ONLY place the two platforms differ. Unix binds a single `UnixListener` and
+    /// accepts in a loop. Windows has to create one named-pipe instance per client and create the
+    /// next instance before serving the current one, so its loop body is a different shape — but
+    /// everything downstream (`handle_connection`) is transport-generic and shared verbatim.
+    #[cfg(unix)]
+    fn spawn_listener(
+        &self,
+        rx: Arc<Mutex<mpsc::UnboundedReceiver<(Uuid, IpcNotification)>>>,
+        request_tx: Option<IpcRequestTx>,
+    ) -> NodeResult<tokio::task::JoinHandle<NodeResult<()>>> {
+        // A socket file left behind by an unclean exit makes `bind` fail with EADDRINUSE.
         if self.socket_path.exists() {
             std::fs::remove_file(&self.socket_path)?;
         }
         let listener = UnixListener::bind(&self.socket_path)?;
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600))?;
         }
-        let (tx, rx) = mpsc::unbounded_channel::<(Uuid, IpcNotification)>();
-        *self.notify_tx.lock().await = Some(tx);
-        let rx = Arc::new(Mutex::new(rx));
-        let path = self.socket_path.clone();
-        let request_tx = self.request_tx.lock().await.clone();
-        let task = tokio::spawn(async move {
+        Ok(tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, _addr)) => {
                         let rx = rx.clone();
                         let request_tx = request_tx.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, rx.clone(), request_tx).await {
+                            if let Err(e) = handle_connection(stream, rx, request_tx).await {
                                 warn!(error = %e, "ipc connection failed");
                             }
                         });
@@ -145,12 +166,8 @@ impl IpcServer {
                     }
                 }
             }
-            let _ = path;
             Ok(())
-        });
-        *self.listener_task.lock().await = Some(task);
-        info!(path = %self.socket_path.display(), "ipc server started");
-        Ok(())
+        }))
     }
 
     pub async fn notify(&self, seat_id: Uuid, notif: IpcNotification) {
@@ -163,6 +180,10 @@ impl IpcServer {
         if let Some(task) = self.listener_task.lock().await.take() {
             task.abort();
         }
+        // Unix only: the socket is a real filesystem entry and leaks if it is not unlinked. A
+        // Windows pipe name is not a file — it disappears with its last instance handle, and
+        // `remove_file` on `\\.\pipe\...` would only ever be an error.
+        #[cfg(unix)]
         if self.socket_path.exists() {
             std::fs::remove_file(&self.socket_path)?;
         }
@@ -179,12 +200,19 @@ impl IpcServer {
 ///
 /// `Ping` is answered locally — it is a liveness probe for this socket, not something the hub
 /// needs to see.
-async fn handle_connection(
-    stream: UnixStream,
+/// Generic over the transport on purpose: a `UnixStream` on macOS/Linux and a `NamedPipeServer`
+/// on Windows both satisfy these bounds, and neither appears by name below. `tokio::io::split`
+/// rather than `UnixStream::into_split` is what makes that possible — named pipes have no
+/// `into_split`, and `split` needs only `AsyncRead + AsyncWrite`.
+async fn handle_connection<S>(
+    stream: S,
     rx: Arc<Mutex<mpsc::UnboundedReceiver<(Uuid, IpcNotification)>>>,
     request_tx: Option<IpcRequestTx>,
-) -> NodeResult<()> {
-    let (read, mut write) = stream.into_split();
+) -> NodeResult<()>
+where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+{
+    let (read, mut write) = tokio::io::split(stream);
     let mut reader = BufReader::new(read);
     let mut buf = Vec::new();
     loop {

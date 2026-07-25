@@ -496,9 +496,76 @@ export function createHub({
       if (frame.type === NodeFrame.MESSAGE_POST) {
         // HubCommand::MessagePost { ... } likewise -> {"message_post": {...}}.
         handleNodeMessagePost(frame.payload?.message_post);
+        return;
+      }
+      if (frame.type === NodeFrame.QUERY) {
+        handleNodeQuery(conn, frame.payload?.query_request);
       }
     });
   });
+
+  /**
+   * Answer a node's read request with exactly one `query.result`.
+   *
+   * Reads are scoped to rooms the node is actually seated in. A node authenticates as itself, not
+   * as an operator: without that check any node could read every transcript on the hub, which is a
+   * far wider grant than "this machine runs one of the agents in that room".
+   *
+   * Every path replies — including failures. A node that gets no answer would leave its caller
+   * (an MCP tool call inside a live Claude session) waiting on a response that never comes.
+   */
+  function handleNodeQuery(conn, payload) {
+    const { request_id: requestId, query } = payload ?? {};
+    if (!requestId || !query || typeof query !== 'object') {
+      log.warn('node.query.malformed', { reason: 'missing request_id or query' });
+      return; // No request_id means nothing to correlate a reply to.
+    }
+    const reply = (ok, result, error) => {
+      conn.send(JSON.stringify(encodeFrame(HubFrame.QUERY_RESULT, {
+        query_result: { request_id: requestId, ok, result: result ?? null, error: error ?? null },
+      })));
+    };
+    const nodeId = conn.meta?.nodeId;
+    if (!nodeId) { reply(false, null, 'not_authenticated'); return; }
+
+    try {
+      const [kind] = Object.keys(query);
+      const args = query[kind] ?? {};
+      const roomId = args.room_id;
+      if (!roomId || !store.nodeHasSeatInRoom(nodeId, roomId)) {
+        // Same answer for "no such room" and "not your room" — distinguishing them would let a
+        // node probe which rooms exist on the hub.
+        reply(false, null, 'room_not_accessible');
+        return;
+      }
+      switch (kind) {
+        case 'transcript_read':
+          reply(true, {
+            messages: store.listMessages(roomId, {
+              afterSeq: Number(args.after_seq ?? 0) || 0,
+              limit: Number(args.limit ?? 50) || 50,
+            }),
+          });
+          return;
+        case 'transcript_search':
+          reply(true, {
+            messages: store.searchMessages(roomId, String(args.query ?? ''), {
+              limit: Number(args.limit ?? 20) || 20,
+            }),
+          });
+          return;
+        case 'roster_read':
+          // Alias -> seat_id is the whole reason handoff.create could not be served on the node.
+          reply(true, { seats: store.listSeats(roomId) });
+          return;
+        default:
+          reply(false, null, `unknown query: ${kind}`);
+      }
+    } catch (err) {
+      log.error('node.query.failed', { err: String(err) });
+      reply(false, null, 'query_failed');
+    }
+  }
 
   /**
    * A seat (Codex/Claude, via its node) posting its reply back into the room.

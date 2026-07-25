@@ -21,9 +21,9 @@ the agent's real reply; a message to a Claude seat reaches a connected channel o
 0600 unix socket and its reply posts back. Verified live on 2026-07-26 — `mac-codex` and
 `mac-claude` answering in the same room, read back out of the production database.
 
-**73 cargo tests, 0 failures. 100 Node hub tests, 0 failures** — but the 100 must be run as
-97 + 3: `replay.test.mjs` leaves a hub server unclosed and wedges the combined run at process exit.
-See "The test-runner hang" for the four real leaks fixed and the one that was not.
+**76 cargo tests, 0 failures. 107 Node hub tests, 0 failures** — and as of 2026-07-26 all 107 run
+in ONE command again: `node --test src/*.test.mjs`. The "97 + 3" split is retired; the residual
+wedge is fixed and its cause identified. See "The test-runner hang".
 
 **`https://roundtable.spoares.com` is live** — nginx vhost built and serving, the PWA loads, and
 the Mac node connects over `wss://` with no tunnel. Nothing is outstanding on deployment.
@@ -51,9 +51,9 @@ HTTP route, because it mints credentials.
 | `roundtable-protocol` | 5 | real — locked v1 types, canonical JSON |
 | `roundtable-store` | 9 | real — 66KB implementation over the 11-table schema |
 | `roundtable-hub` | 24 | real — axum: auth, http, router, state, ws + 4 integration suites |
-| `roundtable-node` | 33 | real — Codex adapter against the REAL generated schema, WS client w/ reconnect, IPC, keyring |
-| **cargo total** | **71** | **0 failures** |
-| `packages/hub` | **100** | green per-file and in small batches; the full 12-file run is still flaky |
+| `roundtable-node` | 36 | real — Codex adapter against the REAL generated schema, WS client w/ reconnect, IPC, keyring |
+| **cargo total** | **76** | **0 failures** |
+| `packages/hub` | **107** | green — the full run is one command again since the wedge was fixed |
 | `packages/web` | 10 | real PWA — builds (24 modules, 205KB) and serves from the hub |
 | `packages/claude-channel` | 2 | builds; the node routes Claude deliveries to it and posts its replies |
 
@@ -91,7 +91,7 @@ And three more found by deploying rather than by testing:
    marked `sent`, never received, no error. A completing hello now supersedes any earlier
    connection for that node.
 
-## The test-runner hang — four real leaks fixed, residual flakiness NOT solved
+## The test-runner hang — SOLVED 2026-07-26 (five real defects, no environment quirk)
 
 Long treated in this repo as a machine/environment quirk. It is not: every cause found so far has
 been a real defect, and one of them was a production defect.
@@ -115,30 +115,91 @@ been a real defect, and one of them was a production defect.
    frames from socket open and exposes `waitFor(type)`. This file went from 3 passing tests to
    all 11.
 
-**Not solved.** `replay.test.mjs` leaves a hub server unclosed, and that wedges the whole run at
-process exit. Measured on a clean checkout:
+5. **The residual wedge was a flaky ASSERTION in `replay.test.mjs`, not a leak.** This is the one
+   this file called "not solved" for weeks, and the diagnosis was backwards: the unclosed server
+   was the *symptom*, not the cause.
+
+   `rule 8: a terminal delivery is never reinjected on reconnect replay` asserted
+   `assert.equal(hub.flushDeliveries(), 1)`. But the hub **also** flushes on node connect, from a
+   deferred `setTimeout(..., 0)` in `server.mjs` (deferred so `hello.accepted` reaches the wire
+   first — the node drops the connection if any other frame precedes it). That auto-flush races
+   the test's manual flush, and whichever arrives second finds nothing left to send and returns 0.
+   So the assertion was really asserting *which of the two won*, which is not the rule under test.
+   It lost about one run in three.
+
+   When it lost, the test threw **before** its trailing `await hub.close()` — so the hub stayed
+   listening with two live sockets, and `node --test` could not exit. That is the exact
+   `TCPServerWrap: 1` + `TCPSocketWrap: 2` signature recorded below.
+
+   Two changes, both in `replay.test.mjs`: the assertion now checks the precondition that actually
+   matters (`store.getDelivery(...).state === 'sent'` after a synchronous flush — true regardless
+   of which path dispatched it), and every test registers `t.after(() => hub.close(); store.close())`
+   so cleanup runs on failure too. A failing test now *reports* instead of wedging the runner.
+
+**Measured before the fix** (clean checkout, macOS, Node v26.4.0):
 
 | Command | Result |
 |---|---|
-| `node --test src/*.test.mjs` | wedged 3 runs out of 3 |
-| same, excluding `replay.test.mjs` | **97/97, 3 runs out of 3** |
-| `node --test src/replay.test.mjs` alone | passes 3/3, wedges ~1 run in 4-6 |
+| `node --test src/*.test.mjs` | wedged 2 of 3 runs |
+| same, excluding `replay.test.mjs` | 97/97 |
+| `node --test src/replay.test.mjs` alone | wedged 1 of 1 with the probe attached |
 
-From inside a hanging run, `process.getActiveResourcesInfo()` reports `TCPServerWrap: 1` and
-`TCPSocketWrap: 2` in the child. Every assertion passes first; the hang is purely at process exit,
-so it costs time, not correctness.
+**Measured after the fix, same machine:** `node --test src/replay.test.mjs` → **12 clean runs of
+12**. `node --test src/*.test.mjs` → **8 clean runs of 8, 100 passed, 0 failed**.
 
-An earlier revision of this file said "roughly 1 run in 4" for the FULL suite. That was measured on
-too small a sample and is wrong — the full run wedges most of the time. The per-file figure is the
-one that holds.
+**Practical guidance:** run the whole thing in one command — `node --test src/*.test.mjs`. The
+"97 + 3" split is retired. Do not reinstate the old "run dispatch.test.mjs first" advice either;
+that diagnosis was wrong too.
 
-One attempted fix was reverted rather than kept: `server.unref()` plus a bounded `setTimeout`
-resolve made it worse (3 hangs in 8) and resolved `close()` before the server had actually closed,
-which is a semantics regression.
+One attempted fix was reverted rather than kept, and should stay reverted: `server.unref()` plus a
+bounded `setTimeout` resolve made it worse (3 hangs in 8) and resolved `close()` before the server
+had actually closed, which is a semantics regression. It was treating the symptom.
 
-**Practical guidance:** `node --test $(ls src/*.test.mjs | grep -v replay)` for a reliable 97, then
-`replay.test.mjs` separately for its 3. Do not reinstate the old "run dispatch.test.mjs first"
-advice — that diagnosis was wrong.
+## The node read path — `node.query` / `query.result` (added 2026-07-26)
+
+`transcript.read`, `transcript.search` and `handoff.create` returned "not implemented" over IPC
+because the node holds neither a transcript nor a room roster; it only ever sees the deliveries
+addressed to it. They now work, over a read path added to the existing node socket.
+
+**Why a new frame pair and not HTTP.** The hub's REST API authenticates by session cookie, minted
+from the admin token. Letting a node use it would mean handing every node an operator credential —
+the wrong trust boundary for a machine that is only supposed to run one agent. The node is already
+authenticated on its WebSocket, so the read path goes there.
+
+**Shape.** `NodeFrame.QUERY` (`node.query`) carries `{ request_id, query: { <kind>: {...} } }` and
+is answered by exactly one `HubFrame.QUERY_RESULT` (`query.result`) carrying
+`{ request_id, ok, result, error }`. Kinds: `transcript_read`, `transcript_search`, `roster_read`.
+This is the **only** request/response pair in the protocol — every other node command is
+fire-and-forget and resolves as soon as its bytes are written (see `handleNodeMessagePost`), which
+is exactly why reads needed something new rather than reusing an existing frame.
+
+**Authorisation.** The hub answers only for rooms the node holds a seat in
+(`store.nodeHasSeatInRoom`). Without that, one node could read every transcript on the hub. An
+unknown room and an unauthorised one both return `room_not_accessible`, so a node cannot use the
+error to probe which rooms exist.
+
+**Correlation and failure.** The node keeps `pending_queries: HashMap<Uuid, oneshot::Sender<...>>`,
+registered *before* the frame is written (the answer can arrive the instant the bytes land). Every
+path answers: an unknown query kind, a refusal, a write failure, and a dropped connection all
+resolve the waiting caller with an error. That caller is a blocking MCP tool call inside a live
+agent session, where silence is indistinguishable from a hang.
+
+**`handoff.create`** reads the roster per handoff rather than caching it. A cached roster is stale
+exactly when it matters — a seat added or detached mid-session — and a handoff to a stale `seat_id`
+fails silently.
+
+Two seam defects were found and fixed while wiring this, both previously unreachable because the
+methods were stubs: `packages/claude-channel` sent `since_seq` where the node reads `after_seq`
+(an `Option`, so serde filled it with `None` and every read silently restarted at 0), and it sent
+`to_seat_id` where the node expects `to_alias`. Agents know each other by alias, never by UUID.
+
+## Also fixed 2026-07-26 — `seat.interrupt` was decoded by nobody
+
+`HubEvent::SeatInterrupt` was fully handled in `main.rs`, and the hub sent the frame on every
+operator cancel, but `hub.rs`'s reader match never listed `"seat.interrupt"` among the kinds it
+decodes. Every cancellation fell through to the catch-all and was dropped with a single
+"unrecognized hub frame kind" line. Cancellation looked implemented end to end and did nothing on
+the node. One missing match arm; found while adding `query.result` to the same list.
 
 ## Decisions
 
@@ -495,10 +556,11 @@ Still absent:
 
 - **Hub adoption of `rightkit-logs`** — `packages/hub/src/log.mjs` is schema-compatible with it but
   is a local zero-dependency implementation. The hub deliberately has no npm dependencies.
-- **Claude seat coverage is partial.** Deliveries reach a connected channel and its replies post
-  back — verified live, both providers answering in one room. But `handoff.create`,
-  `approval.verdict`, `session.join/leave` and `transcript.read/search` return explicit
-  "not implemented" errors over IPC; only `message.reply` and `ping` do real work.
+- **Claude seat coverage.** Deliveries reach a connected channel and its replies post back —
+  verified live, both providers answering in one room. `message.reply`, `transcript.read`,
+  `transcript.search`, `handoff.create` and `ping` all do real work as of 2026-07-26. Still
+  refused, explicitly: `approval.verdict`, and `session.join/leave` (seats are enrolled with
+  `ops/enrol-node.mjs`; the node holds no admin credential to create one).
 - **Windows node** — no installer, never built or run on Windows.
 - **The node never advances its own replay cursor.** It echoes back whatever the handshake gave it,
   so it always reconnects at 0. Harmless now that the hub refuses to replay terminal deliveries,
@@ -524,6 +586,4 @@ Still absent:
 
 1. **nginx** — Adrian's sudo, one command (see HANDOVER.md). Until then the node reaches the hub
    over an SSH tunnel rather than `wss://roundtable.spoares.com`.
-2. Finish the IPC surface — transcript.read/search and handoff.create need the node to reach the
-   hub for data it does not hold (a room roster, a transcript).
-3. Windows node installer (Adrian is handling the timing).
+2. Windows node installer (Adrian is handling the timing).

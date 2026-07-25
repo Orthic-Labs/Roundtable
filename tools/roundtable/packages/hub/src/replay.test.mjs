@@ -2,10 +2,14 @@
 //
 // Delivery-recovery rule 8 from the architecture spec: "A completed delivery is never reinjected."
 //
-// In its OWN file, like e2e-rust-node.test.mjs, because it opens real WebSocket servers: on this
-// machine a file that does so reproducibly hangs `node --test` when it runs anywhere but first in
-// a batch (see HANDOVER.md's known test-runner quirk). Keeping it separate keeps cancel.test.mjs
-// pure store-level and the main batch green.
+// In its OWN file, like e2e-rust-node.test.mjs, because it opens real WebSocket servers, and
+// keeping it separate keeps cancel.test.mjs pure store-level.
+//
+// This file used to wedge `node --test` at exit, which was long blamed on batch position and the
+// environment. It was neither: the first test's assertion raced the hub's on-connect auto-flush and
+// failed ~1 run in 3, and a failing test skipped its own `hub.close()`. Fixed 2026-07-26 — see
+// STATUS.md, "The test-runner hang". Cleanup now lives in `t.after()` precisely so a future failure
+// reports itself instead of hanging the runner.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -65,9 +69,10 @@ async function replayedFrames(port, nodeId, token) {
   return frames;
 }
 
-test('rule 8: a terminal delivery is never reinjected on reconnect replay', async () => {
+test('rule 8: a terminal delivery is never reinjected on reconnect replay', async (t) => {
   const { store, hub, room, token, node, seat } = fixture();
   const addr = await hub.listen(0);
+  t.after(async () => { await hub.close(); store.close(); });
 
   const { deliveries } = store.postMessage({
     roomId: room.id, actorId: crypto.randomUUID(), body: 'work', mentionSeatIds: [seat.id],
@@ -78,7 +83,19 @@ test('rule 8: a terminal delivery is never reinjected on reconnect replay', asyn
   await once(first, 'open');
   first.send(hello(node.id, token));
   await once(first, 'message'); // hello.accepted
-  assert.equal(hub.flushDeliveries(), 1);
+  // The hub ALSO flushes on connect, from a deferred `setTimeout(..., 0)` that exists so
+  // hello.accepted reaches the wire first. That auto-flush races this manual one, and whichever
+  // gets there second finds nothing left to send. Asserting `flushDeliveries() === 1` therefore
+  // asserted which of the two won — not the rule under test — and lost about one run in three.
+  // When it lost, this test threw before reaching `hub.close()`, which left a listening server
+  // and two live sockets behind and wedged `node --test` at exit: the "test-runner hang".
+  // The precondition that actually matters is simply that the delivery went out before it is
+  // marked completed, and after a synchronous flush that is true either way.
+  hub.flushDeliveries();
+  assert.equal(
+    store.getDelivery(deliveries[0].id).state, 'sent',
+    'the delivery must have been dispatched before it is marked completed',
+  );
   store.setDeliveryState(deliveries[0].id, 'completed');
   await closeClient(first);
   await new Promise((r) => setTimeout(r, 50));
@@ -91,15 +108,14 @@ test('rule 8: a terminal delivery is never reinjected on reconnect replay', asyn
     frames.filter((f) => f.type === 'delivery.assign').length, 0,
     'a completed delivery must never be replayed — that re-runs finished work on every reconnect',
   );
-
-  await hub.close();
 });
 
-test('a still-outstanding delivery IS replayed on reconnect', async () => {
+test('a still-outstanding delivery IS replayed on reconnect', async (t) => {
   // The other half of rule 8: skipping terminal deliveries must not skip outstanding ones, or a
   // node that drops mid-delivery silently loses the work.
   const { store, hub, room, token, node, seat } = fixture();
   const addr = await hub.listen(0);
+  t.after(async () => { await hub.close(); store.close(); });
 
   const first = new WebSocket(`ws://127.0.0.1:${addr.port}/node/connect`);
   await once(first, 'open');
@@ -117,17 +133,16 @@ test('a still-outstanding delivery IS replayed on reconnect', async () => {
     frames.filter((f) => f.type === 'delivery.assign').length, 1,
     'an unfinished delivery must survive a reconnect',
   );
-
-  await hub.close();
 });
 
-test('a reconnecting node supersedes its previous connection', async () => {
+test('a reconnecting node supersedes its previous connection', async (t) => {
   // A stale connection for the same node silently swallows deliveries: dispatch() picks the first
   // matching connection and reports success, so the delivery is marked `sent` while the live node
   // never sees it. Observed live after an SSH tunnel dropped — two node.connected for one node_id
   // with one disconnect between them, and two messages that simply vanished.
   const { store, hub, room, token, node, seat } = fixture();
   const addr = await hub.listen(0);
+  t.after(async () => { await hub.close(); store.close(); });
 
   const first = new WebSocket(`ws://127.0.0.1:${addr.port}/node/connect`);
   await once(first, 'open');
@@ -163,5 +178,4 @@ test('a reconnecting node supersedes its previous connection', async () => {
   // TCPSocketWraps behind.
   await closeClient(first);
   await closeClient(second);
-  await hub.close();
 });
