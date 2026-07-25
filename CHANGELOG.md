@@ -81,11 +81,12 @@ the same way), `WsConnection` had no `destroy()`, `close()` tracked only handsha
 superseded and pre-handshake sockets were invisible to it, and `dispatch.test.mjs` lost same-tick
 frames to an `once()` race. That file went from 3 passing tests to all 11.
 
-**Not fully solved:** `replay.test.mjs` still wedges at process exit roughly 1 run in 4, alone,
-holding a `TCPServerWrap` and two sockets (measured with `process.getActiveResourcesInfo()`). Every
-assertion passes first, so it costs CI time rather than correctness. An attempted `server.unref()`
-fix was reverted — it made the flakiness worse and resolved `close()` before the server had
-actually closed.
+**Not fully solved:** `replay.test.mjs` leaves a hub server unclosed and wedges the combined run at
+process exit — `src/*.test.mjs` wedged 3 of 3 runs, while the same set excluding replay passed
+97/97 3 of 3. From inside a hanging run the child holds a `TCPServerWrap` and two sockets
+(`process.getActiveResourcesInfo()`). Every assertion passes first, so it costs time rather than
+correctness. Run 97 + 3 separately. An attempted `server.unref()` fix was reverted — it made things
+worse and resolved `close()` before the server had actually closed.
 
 ### Changed
 

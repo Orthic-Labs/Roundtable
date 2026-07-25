@@ -21,9 +21,9 @@ the agent's real reply; a message to a Claude seat reaches a connected channel o
 0600 unix socket and its reply posts back. Verified live on 2026-07-26 — `mac-codex` and
 `mac-claude` answering in the same room, read back out of the production database.
 
-**73 cargo tests, 0 failures. 100 Node hub tests, 0 failures.** The full 12-file run now often
-completes in one pass, but `replay.test.mjs` still wedges at process exit roughly 1 run in 4 — see
-"The test-runner hang" for the four real leaks that were fixed and the one that was not.
+**73 cargo tests, 0 failures. 100 Node hub tests, 0 failures** — but the 100 must be run as
+97 + 3: `replay.test.mjs` leaves a hub server unclosed and wedges the combined run at process exit.
+See "The test-runner hang" for the four real leaks fixed and the one that was not.
 
 **`https://roundtable.spoares.com` is live** — nginx vhost built and serving, the PWA loads, and
 the Mac node connects over `wss://` with no tunnel. Nothing is outstanding on deployment.
@@ -115,19 +115,30 @@ been a real defect, and one of them was a production defect.
    frames from socket open and exposes `waitFor(type)`. This file went from 3 passing tests to
    all 11.
 
-**Not solved.** `replay.test.mjs` still hangs roughly 1 run in 4, *alone*, and the full suite
-inherits it. Measured with `process.getActiveResourcesInfo()` from inside a hanging run: the child
-is left holding `TCPServerWrap: 1` and `TCPSocketWrap: 2` — a hub server that never finished
-closing. Every assertion in the file passes first; the hang is purely at process exit, so it costs
-CI time, not correctness.
+**Not solved.** `replay.test.mjs` leaves a hub server unclosed, and that wedges the whole run at
+process exit. Measured on a clean checkout:
+
+| Command | Result |
+|---|---|
+| `node --test src/*.test.mjs` | wedged 3 runs out of 3 |
+| same, excluding `replay.test.mjs` | **97/97, 3 runs out of 3** |
+| `node --test src/replay.test.mjs` alone | passes 3/3, wedges ~1 run in 4-6 |
+
+From inside a hanging run, `process.getActiveResourcesInfo()` reports `TCPServerWrap: 1` and
+`TCPSocketWrap: 2` in the child. Every assertion passes first; the hang is purely at process exit,
+so it costs time, not correctness.
+
+An earlier revision of this file said "roughly 1 run in 4" for the FULL suite. That was measured on
+too small a sample and is wrong — the full run wedges most of the time. The per-file figure is the
+one that holds.
 
 One attempted fix was reverted rather than kept: `server.unref()` plus a bounded `setTimeout`
-resolve made it *worse* (3 hangs in 8) and resolved `close()` before the server had actually
-closed, which is a semantics regression.
+resolve made it worse (3 hangs in 8) and resolved `close()` before the server had actually closed,
+which is a semantics regression.
 
-**Practical guidance:** run per-file or in small batches. `replay.test.mjs` is the one to retry if
-a run wedges. Do not reinstate the old "run dispatch.test.mjs first" advice — that diagnosis was
-wrong.
+**Practical guidance:** `node --test $(ls src/*.test.mjs | grep -v replay)` for a reliable 97, then
+`replay.test.mjs` separately for its 3. Do not reinstate the old "run dispatch.test.mjs first"
+advice — that diagnosis was wrong.
 
 ## Decisions
 

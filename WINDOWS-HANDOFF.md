@@ -6,6 +6,9 @@ first for the system as a whole, then this.
 
 **Status: not started.** The Mac node is live and answering. Windows has never been built or run.
 
+Two things are already known-broken and are NOT your fault — read
+"Known broken BEFORE you touch anything" below before you run the test suite.
+
 ---
 
 ## The blocker you will hit in the first 30 seconds
@@ -109,9 +112,57 @@ Hub URL is `wss://roundtable.spoares.com/node/connect`. No tunnel, no VPN; the n
   `fixtures/app-server/schema/`, generated from a real `codex` binary. If Windows Codex is a
   different version, regenerate and diff rather than assuming:
   `codex app-server generate-json-schema --experimental --out <dir>`.
-- The node holds no transcript and no room roster, so `transcript.read`, `transcript.search` and
-  `handoff.create` return explicit "not implemented" over IPC. That is current behaviour on every
-  platform, not a Windows gap.
+
+## Known broken BEFORE you touch anything
+
+Read this before you run the test suite, or you will spend an afternoon debugging something you
+did not cause.
+
+- **`packages/hub/src/replay.test.mjs` wedges the whole run at process exit, often.** Measured on a
+  clean checkout, macOS, no Windows code involved:
+
+  | Command | Result |
+  |---|---|
+  | `node --test src/*.test.mjs` | wedged 3 runs out of 3 |
+  | same, excluding `replay.test.mjs` | **97/97, 3 runs out of 3** |
+  | `node --test src/replay.test.mjs` alone | passes 3/3, wedges ~1 run in 4-6 |
+
+  Every assertion passes first — the tests are green and the process then simply does not exit, so
+  `node --test` sits there with nothing left to report. Measured from inside a hanging run with
+  `process.getActiveResourcesInfo()`: the child holds `TCPServerWrap: 1` and `TCPSocketWrap: 2` — a
+  hub server that never finished closing.
+
+  **Practical: run `node --test $(ls src/*.test.mjs | grep -v replay)` for a reliable 97, then run
+  `replay.test.mjs` separately for its 3.** That is the honest working setup today.
+
+  Four real leaks behind this class of hang have already been found and fixed (see STATUS.md,
+  "The test-runner hang"); this is the residue. **If a suite run wedges, retry it before assuming
+  your change did it.** If you want to fix it properly, that would be welcome — but do not let it
+  block the Windows work, and do not "fix" it with `server.unref()` or a bounded resolve. That was
+  tried and reverted: it made the flakiness worse AND resolved `close()` before the server had
+  actually closed.
+
+- **`transcript.read`, `transcript.search` and `handoff.create` return explicit "not implemented"**
+  over IPC. Not a Windows gap and not a stub to fill in casually: the node holds neither a
+  transcript nor a room roster, so serving them means giving it a read path back to the hub — a new
+  API surface plus a caching question. `handoff.create` additionally needs alias-to-UUID resolution,
+  which needs that roster.
+
+- **The IPC methods that DO work are `message.reply` and `ping`.** That is enough for a Claude seat
+  to receive a delivery and answer it, which is the whole Claude flow today.
+
+## What a healthy run looks like
+
+Before you change anything, get a baseline on the machine you are working on:
+
+```
+cargo test --workspace                                  → 73 passed, 0 failed
+node --test $(ls src/*.test.mjs | grep -v replay)       → 97 passed, 0 failed
+node --test src/replay.test.mjs                         → 3 passed  (may wedge; retry)
+```
+
+100 hub tests in total. If those numbers do not match on a clean checkout, something is wrong with
+the environment rather than with your change — sort that out first.
 
 ## How you will know it worked
 

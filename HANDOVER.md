@@ -34,7 +34,8 @@ production database as an agent chat message. Real binary, real hub, real Codex,
 
 ```
 cargo test --workspace              → 73 passed, 0 failed
-node --test src/*.test.mjs          → 100 passed, 0 failed  (retry if it wedges; see below)
+node --test $(ls src/*.test.mjs|grep -v replay) → 97 passed, 0 failed
+node --test src/replay.test.mjs     → 3 passed  (may wedge at exit; see below)
 ```
 
 ## Deployment gotchas — all four cost real time, none are obvious
@@ -146,10 +147,11 @@ real leaks have been found and fixed, one of them a production defect: the hub c
 no `destroy()`, `close()` only knew about handshaken connections, and `dispatch.test.mjs` had a
 frame race that lost same-tick frames.
 
-Still open: `replay.test.mjs` wedges at process exit roughly 1 run in 4, alone. Every assertion
-passes first — the hang is purely the process not exiting, so it costs time, not correctness.
-Measured from inside a hanging run, the child holds a `TCPServerWrap` and two `TCPSocketWrap`s: a
-hub server that never finished closing. Retry the run, or run per-file.
+Still open: `replay.test.mjs` leaves a hub server unclosed, which wedges the combined run at
+process exit. Measured: `src/*.test.mjs` wedged 3 of 3 runs; the same set excluding replay passed
+97/97 3 of 3; replay alone passes but wedges ~1 in 4-6. Every assertion passes first — the hang is
+purely the process not exiting, so it costs time, not correctness. From inside a hanging run the
+child holds a `TCPServerWrap` and two `TCPSocketWrap`s.
 
 ## Known gotchas (already paid for once — don't rediscover)
 
