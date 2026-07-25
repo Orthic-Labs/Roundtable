@@ -15,6 +15,19 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+/**
+ * Typed store errors map to status codes here rather than the handlers string-matching SQLite.
+ * Anything unmapped stays a 500, so a new failure mode is loud instead of silently becoming a 400.
+ */
+const STORE_ERROR_STATUS = {
+  slug_taken: 409,
+  alias_taken: 409,
+  request_id_reused: 409,
+  unknown_room_or_node: 404,
+  unknown_or_archived_room: 404,
+  body_required: 400,
+};
+
 /** Security headers applied to every response, matching the Rust hub. */
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -148,11 +161,52 @@ export function createHub({ store, adminToken, secure = true, allowedOrigins = [
 
       if (route.pattern === '/api/me') { send(res, 200, { authenticated: true }); return; }
 
-      // Remaining routes are declared but not yet ported. 501 distinguishes "known route, no
-      // handler yet" from "no such route", so a partially-ported hub is legible.
-      send(res, 501, { error: 'not_implemented', route: route.pattern });
+      const { room_id: roomId, seat_id: seatId } = route.params;
+
+      switch (route.pattern) {
+        case '/api/rooms': {
+          if (req.method === 'GET') { send(res, 200, { rooms: store.listRooms() }); return; }
+          const body = await readBody(req);
+          send(res, 201, { room: store.createRoom(body) });
+          return;
+        }
+        case '/api/rooms/:room_id': {
+          const room = store.getRoom(roomId);
+          if (!room) { send(res, 404, { error: 'unknown_room' }); return; }
+          send(res, 200, { room, seats: store.listSeats(roomId) });
+          return;
+        }
+        case '/api/rooms/:room_id/messages': {
+          if (req.method === 'GET') {
+            const afterSeq = Number(url.searchParams.get('after_seq') ?? 0) || 0;
+            const limit = Number(url.searchParams.get('limit') ?? 50) || 50;
+            send(res, 200, { messages: store.listMessages(roomId, { afterSeq, limit }) });
+            return;
+          }
+          const body = await readBody(req);
+          const result = store.postMessage({ ...body, roomId });
+          send(res, 201, result);
+          return;
+        }
+        case '/api/rooms/:room_id/seats': {
+          if (req.method === 'GET') { send(res, 200, { seats: store.listSeats(roomId) }); return; }
+          const body = await readBody(req);
+          send(res, 201, { seat: store.createSeat({ ...body, roomId }) });
+          return;
+        }
+        case '/api/rooms/:room_id/seats/:seat_id': {
+          const detached = store.detachSeat(seatId);
+          if (detached) send(res, 200, { ok: true });
+          else send(res, 404, { error: 'unknown_seat' });
+          return;
+        }
+        default:
+          // Declared but not yet ported. 501 distinguishes "known route, no handler yet" from
+          // "no such route", so a partially-ported hub stays legible.
+          send(res, 501, { error: 'not_implemented', route: route.pattern });
+      }
     } catch (e) {
-      send(res, e.status ?? 500, { error: e.message ?? 'internal_error' });
+      send(res, e.status ?? STORE_ERROR_STATUS[e.message] ?? 500, { error: e.message ?? 'internal_error' });
     }
   });
 

@@ -162,8 +162,11 @@ export class Store {
     return this.#db.prepare('SELECT * FROM seats WHERE room_id = ? AND alias = ?').get(roomId, alias) ?? null;
   }
 
+  /** Returns false if the seat is unknown OR already detached, so callers never report a no-op as success. */
   detachSeat(seatId) {
-    return this.#db.prepare("UPDATE seats SET state = 'detached' WHERE id = ?").run(seatId).changes > 0;
+    return this.#db
+      .prepare("UPDATE seats SET state = 'detached' WHERE id = ? AND state != 'detached'")
+      .run(seatId).changes > 0;
   }
 
   // ---- messages ----------------------------------------------------------
