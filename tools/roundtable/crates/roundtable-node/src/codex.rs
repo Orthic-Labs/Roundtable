@@ -318,7 +318,12 @@ impl CodexAdapter {
         // Previously fire-and-forget (`send_request` wrote the frame and returned `Value::Null`
         // without reading a response). Now genuinely awaits the handshake response via `call()`,
         // which requires the reader loop above to already be running to resolve it.
-        self.call("initialize", serde_json::json!({"clientInfo": {"name": "roundtable-node"}})).await?;
+        // `version` is REQUIRED by ClientInfo — a real `codex app-server` rejects the handshake
+        // with "Invalid request: missing field `version`" without it. The fixture accepted the
+        // shorter form, so this only surfaced when the node was pointed at real Codex.
+        self.call("initialize", serde_json::json!({
+            "clientInfo": { "name": "roundtable-node", "version": env!("CARGO_PKG_VERSION") },
+        })).await?;
         self.send_notification("initialized", serde_json::json!({})).await?;
         info!("codex app server connected");
         Ok(())

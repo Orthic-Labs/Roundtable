@@ -423,6 +423,10 @@ export function createHub({
         conn.meta.cursor = Number(resumeCursor ?? 0) || 0;
         nodeConnections.add(conn);
         log.info('node.connected', { node_id: nodeId, resume_cursor: conn.meta.cursor });
+        // Drain anything queued while this node was away, rather than waiting for the next
+        // dispatch tick. Deferred so hello.accepted is on the wire first — the node closes the
+        // connection if any other frame arrives before it.
+        setTimeout(() => { try { api.flushDeliveries(); } catch { /* loop will retry */ } }, 0);
         conn.on('close', () => {
           nodeConnections.delete(conn);
           log.info('node.disconnected', { node_id: nodeId });
@@ -514,7 +518,7 @@ export function createHub({
     return false;
   }
 
-  return {
+  const api = {
     server,
     // Exposed for tests and for the eventual delivery loop.
     get sessionCount() { return sessions.size; },
@@ -563,11 +567,35 @@ export function createHub({
       }
       return sent;
     },
+    /**
+     * Periodically push queued deliveries to connected nodes.
+     *
+     * Without this the hub accepts messages and dispatches NOTHING: `flushDeliveries` was only
+     * ever called by tests, so a deployed hub queued every delivery forever. Found by posting a
+     * real message to the real box and watching it sit in `queued`.
+     *
+     * The loop is the safety net (it also picks up expired leases and retries); the latency path
+     * is the immediate flush on node connect and after each posted message. `unref()` so the
+     * timer never holds the process open on shutdown.
+     */
+    startDispatchLoop({ intervalMs = 1000 } = {}) {
+      const timer = setInterval(() => {
+        try {
+          const sent = this.flushDeliveries();
+          if (sent > 0) log.info('dispatch.flushed', { count: sent });
+        } catch (err) {
+          log.error('dispatch.failed', { err });
+        }
+      }, intervalMs);
+      timer.unref();
+      return () => clearInterval(timer);
+    },
     listen: (port, host = '127.0.0.1') => new Promise((resolve) => {
       server.listen(port, host, () => resolve(server.address()));
     }),
     close: () => new Promise((resolve) => { for (const c of nodeConnections) c.close(1001, 'shutdown'); server.close(resolve); }),
   };
+  return api;
 }
 
 export { SESSION_COOKIE };

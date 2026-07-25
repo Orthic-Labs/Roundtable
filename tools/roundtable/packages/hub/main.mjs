@@ -66,6 +66,8 @@ const hub = createHub({
 });
 
 await hub.listen(port, host);
+// Without this the hub queues deliveries and never sends them to any node.
+hub.startDispatchLoop();
 log.info('startup.listening', { host, port, database, origins: allowedOrigins.length });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

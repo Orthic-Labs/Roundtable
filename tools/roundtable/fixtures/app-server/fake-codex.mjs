@@ -117,6 +117,14 @@ process.stdin.on("data", (chunk) => {
     }
     const { id, method, params } = request;
     if (method === "initialize") {
+      // ClientInfo requires BOTH name and version. Real codex app-server rejects a missing
+      // `version` with "Invalid request: missing field `version`"; this fixture used to accept
+      // it, which is why the node shipped a handshake that only failed against real Codex.
+      const info = params && params.clientInfo;
+      if (!info || typeof info.name !== "string" || typeof info.version !== "string") {
+        send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid request: missing field `version`" } });
+        continue;
+      }
       send({ jsonrpc: "2.0", id, result: { serverInfo: { name: "fake-codex", version: "0.0.1" }, capabilities: {} } });
       continue;
     }
