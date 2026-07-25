@@ -26,9 +26,8 @@ batches. `dispatch.test.mjs` now passes all 11 of its tests and exits cleanly �
 first 3 ever ran. The full 12-file single-command run is still flaky; see "The test-runner hang"
 below for exactly what is and is not fixed.
 
-The one thing NOT live: the nginx vhost, so `roundtable.spoares.com` still falls through to the
-default server. The conf and its Dockerfile COPY are staged; the rebuild needs Adrian's sudo
-(`vendure` is not in the `docker` group). Until then the node reaches the hub over an SSH tunnel.
+**`https://roundtable.spoares.com` is live** — nginx vhost built and serving, the PWA loads, and
+the Mac node connects over `wss://` with no tunnel. Nothing is outstanding on deployment.
 
 ## Deployed state (2026-07-26)
 
@@ -40,7 +39,8 @@ default server. The conf and its Dockerfile COPY are staged; the rebuild needs A
 | PWA | built on the Mac, rsynced to the box | served by the hub at `/` |
 | Node (Mac) | launchd `com.orthiclabs.roundtable-node` | running, auto-starts at login |
 | Codex | `/opt/homebrew/bin/codex app-server` | real, answering |
-| nginx vhost | staged, not built | **needs Adrian's sudo** |
+| nginx vhost | built and serving `roundtable.spoares.com` | live (TLS via the spoares.com wildcard) |
+| ufw | `allow 8460/tcp from 172.16.0.0/12` | required — the container could not reach the hub without it |
 
 Enrolment is `ops/enrol-node.mjs` (node / room / seat / list) — deliberately a box-side CLI, not an
 HTTP route, because it mints credentials.

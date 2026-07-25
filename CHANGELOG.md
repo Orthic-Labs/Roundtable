@@ -8,8 +8,8 @@ Roundtable is live: the hub runs on Hetzner under pm2, the Mac node runs under l
 message posted to a room reaches a real `codex app-server` and comes back as the agent's reply.
 Verified by posting "Say exactly: THIRD" and reading `THIRD` back out of the production database.
 
-Only nginx is outstanding — the vhost is staged on the box but the rebuild needs sudo, so
-`roundtable.spoares.com` still falls through to the default server.
+**`https://roundtable.spoares.com` is live** — nginx vhost serving the PWA and API, and the Mac
+node connected over `wss://` with no tunnel. Deployment is complete.
 
 ### Added
 
@@ -27,6 +27,21 @@ Only nginx is outstanding — the vhost is staged on the box but the rebuild nee
   wired through to Codex `turn/interrupt`, approvals killed on cancel with a late answer recorded
   as `approval_resolved_after_cancel`, and a typed audit message naming who/what/why.
 - **A real dispatch loop.** See below — there wasn't one.
+
+### Fixed — four deployment defects, found only by going live
+
+- **`http2 on;` took the whole box down.** That syntax needs nginx >= 1.25.1; the box's image is
+  older, so it fails `nginx -t`, the container exits at startup, and every site on the box 521s.
+  rottenhand.com and heardright.app were down until it was corrected. Checking the conf was COPY'd
+  into the image proves it shipped, not that it parses.
+- **ufw silently blocked the new upstream port.** 3301 and 4211:4215 were allowed from
+  172.16.0.0/12; 8460 was not, so nginx accepted TLS and hung until timeout while host-to-hub
+  worked fine the whole time.
+- **Binding only to the docker gateway did not work.** The containerised nginx could not reach
+  172.22.0.1:8460; moved to 0.0.0.0 like every other service, with the firewall keeping it private
+  (8460 verified unreachable from the public internet).
+- **rustls had no crypto provider**, so the node panicked on its first `wss://` dial after running
+  over `ws://` for all of development — and exited 0, so launchd never restarted it.
 
 ### Fixed — six defects a green test suite could not see
 

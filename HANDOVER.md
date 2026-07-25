@@ -21,7 +21,8 @@ doesn't say `Orthic-Labs/roundtable`, stop and fix that first.
 ## It is live
 
 ```
-Hub    Hetzner, pm2 `roundtable-hub`, 172.22.0.1:8460, pm2 save'd
+URL    https://roundtable.spoares.com  (PWA + API + wss node endpoint)
+Hub    Hetzner, pm2 `roundtable-hub`, 0.0.0.0:8460, pm2 save'd
 DB     ~/.local/share/roundtable/roundtable.sqlite3 (WAL)
 Backup ~/backups/roundtable, cron 04:15, node:sqlite backup() + integrity_check
 Node   this Mac, launchd com.orthiclabs.roundtable-node, starts at login
@@ -36,31 +37,31 @@ cargo test --workspace              → 71 passed, 0 failed
 node --test (per file / small batch) → 100 passed, 0 failed
 ```
 
-## THE ONE THING LEFT — needs Adrian's sudo
+## Deployment gotchas — all four cost real time, none are obvious
 
-`roundtable.spoares.com` still falls through to the default server. The vhost is staged at
-`~/sites/nginx/roundtable.conf` on the box; the Dockerfile needs its `COPY` line and a rebuild, and
-`vendure` is not in the `docker` group. Run this on the box:
+Everything below is DONE. Recorded because each was invisible until the thing was actually deployed.
 
-```bash
-cd ~/sites/nginx && cp Dockerfile Dockerfile.bak-$(date +%s) && \
-  echo 'COPY roundtable.conf /etc/nginx/conf.d/roundtable.conf' >> Dockerfile && \
-  for f in *.conf; do grep -q "COPY $f " Dockerfile && echo "IN $f" || echo "MISSING $f"; done && \
-  sudo docker compose build && sudo docker compose up -d && \
-  curl -sI https://roundtable.spoares.com/healthz | head -1
-```
+1. **`http2 on;` took the whole box down.** `listen 443 ssl;` + `http2 on;` needs nginx >= 1.25.1;
+   this box's `macbre/nginx-brotli` is older, so the directive fails `nginx -t`, the container exits
+   at startup, and EVERY site 521s — not just yours. Use `listen 443 ssl http2;`, as every other
+   conf here does. Verifying the conf was COPY'd into the image proves it shipped, NOT that it
+   parses; run `nginx -t` against the built image before `up -d`.
+2. **ufw silently blocks new upstream ports.** Existing rules allow 3301 and 4211:4215 from
+   `172.16.0.0/12`; 8460 was not there, so nginx accepted TLS and then hung until timeout (`499` in
+   the access log). Host-to-hub worked the whole time, which makes this look like an nginx bug when
+   it is a firewall one. Any NEW upstream port needs:
+   `sudo ufw allow from 172.16.0.0/12 to any port <port> proto tcp`
+3. **Bind upstreams to `0.0.0.0`.** Binding only to the docker gateway `172.22.0.1` looked tighter
+   but the containerised nginx could not reach it. Every other service here binds all interfaces;
+   the host firewall is what keeps the port private (8460 is confirmed unreachable from the public
+   internet).
+4. **rustls has no default crypto provider.** The node ran over `ws://` for all of development and
+   panicked on its first `wss://` dial. Worse, it exited 0, so launchd's
+   `KeepAlive(SuccessfulExit=false)` did not restart it — a silent self-disable. Fixed by
+   installing `ring` explicitly in `main()`.
 
-Every line of that loop must read `IN`. A `MISSING` is a hard stop — the image bakes confs in
-rather than mounting them, so a conf on disk but absent from the Dockerfile is silently dropped and
-its domain falls through to damneddesigns (this happened to spoares.com on 2026-06-15).
-
-Afterwards, point the node at the real URL instead of the SSH tunnel:
-
-```bash
-ROUNDTABLE_HUB_URL=wss://roundtable.spoares.com/node/connect \
-  ROUNDTABLE_NODE_ID=4d1cb397-b1cb-4134-b1ed-4f991c632c98 \
-  /Volumes/D/claude/roundtable/tools/roundtable/ops/install-macos.sh
-```
+`pm2 restart` does NOT reload env from `ecosystem.config.cjs`. Use `pm2 delete` + `pm2 start
+ops/ecosystem.config.cjs`, then `pm2 save`.
 
 ## Operating it
 
