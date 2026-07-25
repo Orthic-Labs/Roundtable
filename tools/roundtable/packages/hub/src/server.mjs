@@ -342,9 +342,44 @@ export function createHub({
       if (frame.type === NodeFrame.PONG) return;
       if (frame.type === NodeFrame.DELIVERY_ACK) {
         store.ackDelivery(frame.payload?.delivery_id);
+        return;
+      }
+      if (frame.type === NodeFrame.MESSAGE_POST) {
+        handleNodeMessagePost(frame.payload);
       }
     });
   });
+
+  /**
+   * A seat (Codex/Claude, via its node) posting its reply back into the room.
+   *
+   * The Rust node's ClientCommand::PostMessage does not wait for an ack from this frame — it
+   * resolves its own caller as soon as the frame is written to the socket, relying entirely on
+   * (seat_id, request_id) dedupe for safety across a reconnect-and-retry. There is deliberately no
+   * response frame sent back for this message type; match that contract rather than inventing one.
+   */
+  function handleNodeMessagePost(payload) {
+    const {
+      request_id: requestId, seat_id: seatId, room_id: roomId,
+      message_kind: kind, body, reply_to: replyTo, request_payload_sha256: sha,
+    } = payload ?? {};
+    if (!requestId || !seatId || !roomId || typeof body !== 'string') {
+      console.error('node.message.post: malformed frame, dropping', payload);
+      return;
+    }
+    const seat = store.getSeat(seatId);
+    if (!seat || seat.room_id !== roomId) {
+      console.error('node.message.post: unknown seat or room mismatch, dropping', { seatId, roomId });
+      return;
+    }
+    try {
+      store.dedupe(seatId, requestId, sha ?? '', () => store.postMessage({
+        roomId, actorId: seatId, actorKind: 'agent', kind, body, replyTo,
+      }));
+    } catch (e) {
+      console.error('node.message.post: dedupe/post failed', e.message);
+    }
+  }
 
   /**
    * Push one queued delivery to whichever connection owns that seat's node.

@@ -175,6 +175,12 @@ export class Store {
     return this.#db.prepare('SELECT * FROM seats WHERE room_id = ? ORDER BY alias').all(roomId);
   }
 
+  /** A single seat by id, or null. Used to validate an incoming node frame names a real seat
+   * before persisting anything on its behalf. */
+  getSeat(seatId) {
+    return this.#db.prepare('SELECT * FROM seats WHERE id = ?').get(seatId) ?? null;
+  }
+
   seatByAlias(roomId, alias) {
     return this.#db.prepare('SELECT * FROM seats WHERE room_id = ? AND alias = ?').get(roomId, alias) ?? null;
   }
