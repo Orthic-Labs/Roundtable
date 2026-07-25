@@ -23,6 +23,11 @@ sha2 = "=0.10.9"
 async-trait = "=0.1.89"
 tracing = "=0.1.44"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+# rustls 0.23 ships NO crypto provider unless one is selected. Without this the node connects
+# fine over ws:// and panics the moment it dials wss:// — "Could not automatically determine the
+# process-level CryptoProvider" — which is every real deployment. `ring` over `aws-lc-rs`: it is
+# pure-Rust-plus-asm and needs no cmake/NASM, so the Windows build stays buildable.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [dev-dependencies]

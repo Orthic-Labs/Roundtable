@@ -27,6 +27,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    // Must happen before the first TLS dial. rustls 0.23 has no implicit provider, so a `wss://`
+    // hub URL panics without this — the node ran fine against a plain `ws://` tunnel for the whole
+    // of development and then died on its first real connection to the deployed hub.
+    if rustls::crypto::ring::default_provider().install_default().is_err() {
+        // Only fails if something already installed one, which is fine.
+        tracing::debug!("a rustls crypto provider was already installed");
+    }
+
     let config_path = std::env::var("ROUNDTABLE_NODE_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("config.json"));
