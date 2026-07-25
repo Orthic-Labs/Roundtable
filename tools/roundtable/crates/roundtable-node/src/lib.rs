@@ -24,7 +24,7 @@ pub enum NodeError {
     #[error("hub rejected hello: {0}")]
     HubRejected(String),
     #[error("protocol version mismatch: hub={hub} node={node}")]
-    ProtocolVersion { hub: u8, node: u8 },
+    ProtocolVersion { hub: u16, node: u16 },
     #[error("invalid frame: {0}")]
     InvalidFrame(String),
     #[error("provider error: {0}")]

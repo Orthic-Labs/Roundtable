@@ -2,7 +2,12 @@
 
 Cross-device rooms for existing local agent sessions. Round-trip a message from one device to another with a vendor session attached on the receiving side, and stream the result back without sharing keys, prompts, or context.
 
-Delivered to `https://github.com/Orthic-Labs/roundtable` at `main` (HEAD `210047f`).
+> **Superseded on the numbers.** This summary describes the work as it stood on 2026-07-24. For
+> what is on `main` now, read [`STATUS.md`](./STATUS.md), which is authoritative.
+>
+> The delivery claim below — a push to `github.com/Orthic-Labs/roundtable` at HEAD `210047f` — is
+> **accurate**; `210047f` is an ancestor of `main` here. A revision of these docs briefly marked
+> it unverifiable, having checked from a disconnected copy of this tree.
 
 ## What landed
 
@@ -74,7 +79,7 @@ Claude attaches via `packages/claude-channel` (a thin MCP shim over the Claude C
 
 ## Spec debt (5 stale claims, CODE-FELL-SHORT)
 
-Tracked in `.agent/reconcile.json` (regenerable workspace artifact, not in the repo):
+Tracked in `.agent/stale.json` (regenerable workspace artifact, not in the repo):
 
 - Hub adoption of `rightkit-logs` (architecture §"RightKit reuse").
 - `MessageKind::SeatInterrupt` + interrupt handler.
@@ -90,15 +95,17 @@ These ship as documented debt. Each has a concrete `proposedReconciliation` in t
 - **Hetzner deployment (Task 11):** `docker-compose`, `nginx-roundtable.conf`, `install-macos.sh` / `install-windows.ps1`, `backup.sh` — architecture specifies the recipe; implementation paths under `tools/roundtable/ops/` are not yet generated.
 - **OKF emission (`skill-emit blueprint`):** blocked at the same machine boundary as the push was — both the sandbox and the credential path prevented the run. The blueprint artifacts are present locally (`.agent/`, `.blueprint/`) and are regenerable.
 
-## Verification (per-scope, pre-push)
+## Verification (per-scope, in the producing worktrees)
 
-| Slice | Tests |
-|---|---|
-| `roundtable-protocol` | 5/5 |
-| `roundtable-store` | 9/9 |
-| `roundtable-hub` | 24/24 (auth, delivery, http, reconnect) |
-| `roundtable-node` | 24/24 (ipc, reconnect, codex_contract) |
-| `packages/web` | 10/10 |
-| `packages/claude-channel` | tsx test pass |
+| Slice | Tests in worktree | Tests on `main` |
+|---|---|---|
+| `roundtable-protocol` | 5/5 | **5** |
+| `roundtable-store` | 9/9 | **1** |
+| `roundtable-hub` | 24/24 (auth, delivery, http, reconnect) | **0** |
+| `roundtable-node` | 24/24 (ipc, reconnect, codex_contract) | **24** |
+| `packages/web` | 10/10 | **1** |
+| `packages/claude-channel` | tsx test pass | 7 tools present |
 
-Total: **72/72** in the agent worktrees that produced each slice. End-to-end Task 12 remains.
+Total: **72/72 in the agent worktrees that produced each slice — 31 on `main`.** The worktree
+column is not a claim about `main`: the hub, store, and PWA slices were never merged. Branch
+inventory and merge/discard verdicts are in [`STATUS.md`](./STATUS.md). End-to-end Task 12 remains.

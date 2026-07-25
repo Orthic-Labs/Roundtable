@@ -29,7 +29,7 @@ _No classified product flows yet; run Blueprint Phase 2 synthesis._
 ## Health & Security (loud-partial when graph is missing)
 
 - Stale claims: **3** _(source: .agent/stale.json:staleClaims)_
-- Missing references: **36** _(source: .agent/stale.json:missingReferences)_
+- Missing references: **41** _(source: .agent/stale.json:missingReferences)_
 - Detailed health and security findings live in `.agent/understanding.json`; every synthesized
   component and flow above retains its recorded evidence. _(source: .agent/understanding.json)_
 

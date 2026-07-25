@@ -1,42 +1,15 @@
-import { useMemo, useState } from 'react';
-import type { Message, Seat } from './types';
-import './styles.css';
-
-const initialSeats: Seat[] = [
-  { id: 's1', alias: 'mac-claude', provider: 'claude', state: 'idle', last_seen_ms: Date.now() },
-  { id: 's2', alias: 'windows-codex', provider: 'codex', state: 'running', last_seen_ms: Date.now() },
-];
-const initialMessages: Message[] = [
-  { id: 'm1', seq: 1, actor: 'adrian', kind: 'chat', body: 'Review the cancellation contract and hand off the test to @windows-codex.', created_at_ms: Date.now() - 42000, state: 'completed' },
-  { id: 'm2', seq: 2, actor: 'mac-claude', kind: 'completion', body: 'The cancellation path writes the typed state before interrupting the provider. The partial output remains auditable.', created_at_ms: Date.now() - 18000, state: 'completed' },
-  { id: 'm3', seq: 3, actor: 'windows-codex', kind: 'progress', body: 'Running the interrupt-before-write regression test.', created_at_ms: Date.now() - 4000, state: 'running' },
-];
-
-function formatTime(ms: number) { return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
-
-export default function App() {
-  const [seats, setSeats] = useState(initialSeats);
-  const [messages, setMessages] = useState(initialMessages);
-  const [draft, setDraft] = useState('');
-  const [online, setOnline] = useState(true);
-  const [approval, setApproval] = useState(true);
-  const mentions = useMemo(() => seats.filter((seat) => draft.includes(`@${seat.alias}`)), [draft, seats]);
-
-  function send() {
-    const body = draft.trim();
-    if (!body) return;
-    setMessages((current) => [...current, { id: crypto.randomUUID(), seq: current.length + 1, actor: 'adrian', kind: 'chat', body, created_at_ms: Date.now(), state: online ? 'completed' : 'queued' }]);
-    setDraft('');
-  }
-
-  return <div className="app">
-    {!online && <div className="offline" role="status">Offline — writes will replay when reconnected. Approvals and reply-with-attach are disabled.</div>}
-    <header className="rail"><div className="wordmark">Round<span>table</span></div><div className="seats" aria-label="Seats in this room">{seats.map((seat) => <div className="seat" key={seat.id}><i className={`dot ${seat.state}`} aria-hidden="true"/><b>@{seat.alias}</b><small>{seat.provider} · {seat.state}</small></div>)}</div><div className="rail-right"><button className="connection" onClick={() => setOnline((value) => !value)} aria-label="Toggle connection"><i/> {online ? 'hub live' : 'offline'}</button><span className="mono">#r-72a1</span></div></header>
-    <div className="room-meta"><span><em>objective</em> cross-device cancellation proof</span><span><em>handoff depth</em> 2 / 8</span><span><em>open handoffs</em> 1</span><span><em>dead-letter</em> 0 / 30</span></div>
-    <main><section className="transcript" aria-label="Room transcript">{messages.map((message) => <article className={`turn ${message.kind}`} key={message.id}><div className="kind">{message.kind}</div><div className="bubble"><div className="who"><b>{message.actor}</b><span className="mono">{formatTime(message.created_at_ms)}</span></div><div>{message.body}</div>{message.state && <span className={`state ${message.state}`}>{message.state}</span>}</div></article>)}</section>
-      <aside><section className="panel"><h2>Wake envelope</h2><div className="chips"><span>from @user</span><span>→</span>{mentions.length ? mentions.map((seat) => <strong key={seat.id}>@{seat.alias}</strong>) : <span className="muted">no selected target</span>}</div><div className="evidence"><b>evidence refs digest</b><br/>commit: e03add00<br/>test: cargo test -p roundtable-hub</div></section>{approval && <section className="panel approval"><h2>Approval requested</h2><code>cancel delivery d-7af3 from @mac-claude</code><p className="muted">Partial outputs remain. The protocol does not undo prior actions.</p><div className="actions"><button className="primary" disabled={!online} onClick={() => setApproval(false)}>Approve</button><button disabled={!online} onClick={() => setApproval(false)}>Reject</button></div></section>}<section className="panel hub-info"><h2>Hub</h2><p>lease · 10m</p><p>WAL · synchronous=NORMAL</p><p>nodes · mac-01, win-01</p></section></aside>
-    </main>
-    <form className="composer" onSubmit={(event) => { event.preventDefault(); send(); }}><textarea aria-label="Message room" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Message @claude or @codex…"/><span className="hint mono">/handoff @windows-codex</span><button className="primary" type="submit">Send</button></form>
-    <footer><span>node mac-01 · present</span><span>node win-01 · present</span><span>events · 1,284 today</span><span className="ok">{online ? 'all nodes within lease window' : 'writes queued locally'}</span></footer>
-  </div>;
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { api } from './api'; import { offlineStore } from './offline'; import { Login } from './components/Login'; import { RoomList } from './components/RoomList'; import { RoomView } from './components/RoomView'; import type { Approval, DiscoveredSession, Message, Room, Seat, ServerEvent } from './types'; import './styles.css';
+const emptyByRoom = <T,>(): Record<string,T[]> => ({});
+export default function App(){
+ const [auth,setAuth]=useState<'loading'|'out'|'in'>('loading'),[rooms,setRooms]=useState<Room[]>([]),[activeId,setActiveId]=useState<string>(),[messages,setMessages]=useState<Record<string,Message[]>>(emptyByRoom),[seats,setSeats]=useState<Record<string,Seat[]>>(emptyByRoom),[sessions,setSessions]=useState<DiscoveredSession[]>([]),[approvals,setApprovals]=useState<Approval[]>([]),[online,setOnline]=useState(navigator.onLine);
+ const active=rooms.find(r=>r.id===activeId);
+ const load=useCallback(async()=>{const rs=await api.rooms();setRooms(rs);setActiveId(x=>x||rs.find(r=>!r.archived_at)?.id);setSessions(await api.sessions());for(const room of rs.filter(r=>!r.archived_at)){const [ms,ss]=await Promise.all([api.messages(room.id),api.seats(room.id)]);setMessages(x=>({...x,[room.id]:ms}));setSeats(x=>({...x,[room.id]:ss}))}},[]);
+ useEffect(()=>{api.me().then(()=>{setAuth('in');return load()}).catch(async()=>{setAuth('out');const cache=await offlineStore.loadSnapshot().catch(()=>undefined);if(cache){setRooms(cache.rooms);setMessages(cache.messages);setSeats(cache.seats);setApprovals(cache.approvals)}})},[load]);
+ const handleEvent=useCallback((event:ServerEvent)=>{if(event.type==='seat.presence'){const seat=event.payload as unknown as Seat;setSeats(x=>({...x,[seat.room_id]:(x[seat.room_id]||[]).map(s=>s.id===seat.id?{...s,...seat}:s)}))}if(event.type==='delivery.state'){const p=event.payload as {room_id:string;message_id:string;state:Message['delivery_state']};setMessages(x=>({...x,[p.room_id]:(x[p.room_id]||[]).map(m=>m.id===p.message_id?{...m,delivery_state:p.state}:m)}))}if(event.type==='message.posted'){const m=event.payload as unknown as Message;setMessages(x=>({...x,[m.room_id]:[...(x[m.room_id]||[]).filter(old=>old.id!==m.id),m].sort((a,b)=>a.seq-b.seq)}))}if(event.type==='approval.requested')setApprovals(x=>[...x,event.payload as unknown as Approval])},[]);
+ useEffect(()=>{if(auth!=='in')return;return api.events(handleEvent,async connected=>{setOnline(connected);if(connected){for(const write of await offlineStore.list().catch(()=>[])){try{await api.replay(write);await offlineStore.remove(write.request_id)}catch{break}}}})},[auth,handleEvent]);
+ useEffect(()=>{if(auth==='in')offlineStore.saveSnapshot({rooms,messages,seats,approvals}).catch(()=>undefined)},[auth,rooms,messages,seats,approvals]);
+ const actions=useMemo(()=>({create:async(input:Pick<Room,'slug'|'title'|'objective'>)=>{const room=await api.createRoom(input);setRooms(x=>[...x,room]);setActiveId(room.id);setMessages(x=>({...x,[room.id]:[]}));setSeats(x=>({...x,[room.id]:[]}))},archive:async(id:string)=>{const room=await api.archiveRoom(id);setRooms(x=>x.map(r=>r.id===id?room:r));if(activeId===id)setActiveId(rooms.find(r=>r.id!==id&&!r.archived_at)?.id)},send:async(body:string,mentioned_seat_ids:string[])=>{if(!active)return;const request_id=crypto.randomUUID();const optimistic:Message={id:request_id,room_id:active.id,seq:active.next_seq,actor_id:'human',actor:'adrian',actor_kind:'human',kind:'chat',body,mentioned_seat_ids,created_at_ms:Date.now(),pending:true,delivery_state:'queued'};setMessages(x=>({...x,[active.id]:[...(x[active.id]||[]),optimistic]}));if(!online){await offlineStore.enqueue({request_id,kind:'message',path:`/api/rooms/${active.id}/messages`,body:{body,mentioned_seat_ids,request_id},created_at_ms:Date.now(),attempt_at_ms:Date.now()});return}const posted=await api.postMessage(active.id,body,mentioned_seat_ids,request_id);setMessages(x=>({...x,[active.id]:(x[active.id]||[]).map(m=>m.id===request_id?posted:m)}))},older:async()=>{if(!active)return;const current=messages[active.id]||[];const older=await api.messages(active.id,current[0]?.seq);setMessages(x=>({...x,[active.id]:[...older,...current]}))},attach:async(session:DiscoveredSession,alias:string)=>{if(!active)return;const seat=await api.attachSeat(active.id,session,alias);setSeats(x=>({...x,[active.id]:[...(x[active.id]||[]),seat]}))},detach:async(id:string)=>{if(!active)return;await api.detachSeat(active.id,id);setSeats(x=>({...x,[active.id]:(x[active.id]||[]).filter(s=>s.id!==id)}))},resolve:async(approval:Approval,decision:string)=>{const resolved=await api.resolveApproval(approval.id,decision,crypto.randomUUID());setApprovals(x=>x.map(a=>a.id===approval.id?resolved:a))},handoff:async(target:Seat,summary:string)=>{if(!active)return;const source=(seats[active.id]||[])[0];if(!source)return;const posted=await api.handoff(active.id,source.id,target.id,summary,[],crypto.randomUUID());setMessages(x=>({...x,[active.id]:[...(x[active.id]||[]),posted]}))}}),[active,activeId,rooms,messages,seats,online]);
+ if(auth==='loading')return <div className="loading" role="status">Loading Roundtable…</div>; if(auth==='out')return <Login onLogin={async token=>{await api.login(token);setAuth('in');await load()}}/>;
+ return <div className="shell"><header className="topbar"><div className="wordmark">Round<span>table</span></div><span className={`connection ${online?'live':'lost'}`}>{online?'Hub live':'Offline'}</span><button onClick={async()=>{await api.logout();setAuth('out')}}>Sign out</button></header><div className="workspace"><RoomList rooms={rooms} activeId={activeId} onSelect={setActiveId} onCreate={actions.create} onArchive={actions.archive}/>{active?<RoomView room={active} seats={seats[active.id]||[]} sessions={sessions} messages={messages[active.id]||[]} approvals={approvals} online={online} onSend={actions.send} onLoadOlder={actions.older} onAttach={actions.attach} onDetach={actions.detach} onResolve={actions.resolve} onHandoff={actions.handoff}/>:<main className="empty"><h1>Create a room</h1><p>Attach a local session and begin a cross-device conversation.</p></main>}</div></div>
 }

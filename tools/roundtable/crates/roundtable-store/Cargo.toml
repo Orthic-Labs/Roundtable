@@ -1,9 +1,17 @@
 [package]
 name = "roundtable-store"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
-roundtable-protocol = { path = "../roundtable-protocol" }
-rusqlite = { version = "0.40.1", features = ["bundled"] }
-thiserror = "2"
+roundtable-protocol.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

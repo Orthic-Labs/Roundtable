@@ -1,5 +1,13 @@
 export type SeatState = 'detached' | 'offline' | 'idle' | 'running' | 'waiting_approval' | 'error';
 export type MessageKind = 'chat' | 'question' | 'progress' | 'completion' | 'handoff' | 'approval' | 'system';
-export type Seat = { id: string; alias: string; provider: 'claude' | 'codex'; state: SeatState; last_seen_ms: number };
-export type Message = { id: string; seq: number; actor: string; kind: MessageKind; body: string; created_at_ms: number; state?: 'queued' | 'running' | 'completed' | 'failed' };
+export type DeliveryState = 'queued' | 'sent' | 'acked' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'dead_letter';
+export type EvidenceRef = { kind: 'commit' | 'test' | 'artifact' | 'url'; value: string };
+export type Seat = { id: string; room_id: string; node_id: string; alias: string; provider: 'claude' | 'codex'; session_ref: string; state: SeatState; last_seen_ms: number; last_ack_seq: number };
+export type DiscoveredSession = { node_id: string; node_name: string; provider: Seat['provider']; session_ref: string; title: string; attached_seat_id?: string };
+export type Message = { id: string; room_id: string; seq: number; actor_id: string; actor: string; actor_kind: 'human' | 'agent' | 'system'; kind: MessageKind; body: string; reply_to?: string; mentioned_seat_ids: string[]; created_at_ms: number; delivery_state?: DeliveryState; pending?: boolean; handoff?: { from_alias: string; to_alias: string; summary: string; evidence_refs: EvidenceRef[] } };
 export type Room = { id: string; slug: string; title: string; objective: string; next_seq: number; archived_at?: number };
+export type Approval = { id: string; room_id: string; seat_id: string; description: string; input_preview: string; decisions: string[]; state: 'pending' | 'resolved'; resolution?: string };
+export type QueueKind = 'message' | 'handoff' | 'approval';
+export type QueuedWrite = { request_id: string; kind: QueueKind; path: string; body: unknown; created_at_ms: number; attempt_at_ms: number };
+export type Snapshot = { rooms: Room[]; messages: Record<string, Message[]>; seats: Record<string, Seat[]>; approvals: Approval[] };
+export type ServerEvent = { type: 'seat.presence' | 'delivery.state' | 'message.posted' | 'approval.requested'; payload: Record<string, unknown> };

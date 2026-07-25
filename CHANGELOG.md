@@ -2,7 +2,28 @@
 
 All notable changes to this repo. Categories follow [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — corrections, 2026-07-25
+
+### Fixed
+
+- **Status claims reconciled against `main`.** The 0.1.0 entry below describes work as it existed
+  in the agent worktrees that produced each slice. The hub, store, and PWA slices were never
+  merged, so those descriptions do not hold for `main`. Measured on a clean `main`: 31 tests, 0
+  failures (protocol 5, node 24, store 1, hub 0, web 1) against the 72 previously claimed.
+  [`STATUS.md`](./STATUS.md) is now the authoritative status document.
+- **Push history reinstated as accurate.** An earlier correction in this entry claimed the
+  commits below (`3455587`, `2b3c0c2`, `2c3140f`, `6e5ac7a`, `210047f`) did not exist. That was
+  wrong: all five are ancestors of `main` in this repository. The check had been run from a copy
+  of this tree that sat inside the `bogusyogi/claude` workspace with no `.git` of its own, so it
+  resolved against that repo instead of this one.
+- **Corrected `.agent/reconcile.json` → `.agent/stale.json`** in README, SUMMARY, and this file;
+  the former never existed.
+- **Pinned the cargo workspace members explicitly** instead of globbing `crates/*`, which failed
+  the whole workspace whenever a tooling scratch directory appeared under `crates/`.
+
 ## [0.1.0] — 2026-07-24
+
+> These entries describe the **producing worktrees**, not `main`. See [`STATUS.md`](./STATUS.md).
 
 ### Added
 
@@ -33,7 +54,7 @@ Total: 72/72 in the agent worktrees that produced each slice. End-to-end accepta
 
 ### Documented debt (5 stale claims, CODE-FELL-SHORT)
 
-Each item below is verified against the spec as not yet implemented; tracked in the workspace `.agent/reconcile.json` (regenerable, not pushed).
+Each item below is verified against the spec as not yet implemented; tracked in the workspace `.agent/stale.json` (regenerable, not pushed).
 
 - Hub adoption of `rightkit-logs` (architecture §"RightKit reuse")
 - `MessageKind::SeatInterrupt` + interrupt handler
@@ -47,7 +68,7 @@ Each item below is verified against the spec as not yet implemented; tracked in 
 - **Hetzner deployment (Task 11) deferred.** `docker-compose`, `nginx-roundtable.conf`, `install-macos.sh` / `install-windows.ps1`, `backup.sh` are scoped by the architecture but not generated.
 - **OKF emission deferred.** `skill-emit blueprint` requires out-of-sandbox execution; the artifacts are present locally in `.agent/`.
 
-### Push history
+### Push history (verified — all five are ancestors of `main`)
 
 - `3455587` — docs(roundtable): cross-device architecture and generated overview docs
 - `2b3c0c2` — tools(roundtable): scaffold hub, store, protocol, node, PWA, Claude channel, fixtures

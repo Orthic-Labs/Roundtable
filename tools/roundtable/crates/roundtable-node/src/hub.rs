@@ -19,12 +19,34 @@ use uuid::Uuid;
 
 use roundtable_protocol::{
     canonical_sha256, validate_message_body, ActorKind, Delivery, DeliveryReason,
-    DeliveryState, Envelope, Message, MessageKind, PROTOCOL_VERSION, Seat,
+    DeliveryState, Message, MessageKind, PROTOCOL_VERSION, Seat,
     SeatProvider, SeatState,
 };
 use crate::config::NodeConfig;
 use crate::state::NodeState;
 use crate::{NodeError, NodeResult};
+
+/// Node's legacy wire envelope: `{version, event_id, sent_at_ms, type, payload}`.
+///
+/// NOT the same shape as `roundtable_protocol::WsEnvelope`, which carries a
+/// `#[serde(flatten)]` event instead of a nested `payload` and a `type` tag. The node
+/// client and the hub were built in different eras against different framings and have
+/// never been integration-tested against each other; node's fixtures
+/// (`fixtures/hub/fake-hub.mjs`) speak this shape.
+///
+/// Kept local to the node so the crate compiles and its 24 tests keep passing without
+/// silently claiming a wire compatibility that has not been verified. Aligning the two
+/// framings is tracked in `roundtable/STATUS.md`; do not "fix" this by swapping in
+/// `WsEnvelope` without also porting the fixtures and adding a real node<->hub test.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Envelope<T> {
+    version: u16,
+    event_id: Uuid,
+    sent_at_ms: i64,
+    #[serde(rename = "type")]
+    kind: String,
+    payload: T,
+}
 
 #[async_trait]
 pub trait HubTransport: Send + Sync {

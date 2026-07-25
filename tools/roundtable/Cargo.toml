@@ -1,3 +1,37 @@
 [workspace]
-members = ["crates/*"]
+# Members are listed explicitly rather than globbed as "crates/*": the glob picks up any
+# stray directory under crates/ (tooling scratch dirs such as .claude/.cc-writes appear
+# there), and cargo then fails the whole workspace with "failed to load manifest for
+# workspace member". Add new crates to this list.
+members = [
+    "crates/roundtable-hub",
+    "crates/roundtable-node",
+    "crates/roundtable-protocol",
+    "crates/roundtable-store",
+]
 resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+futures-util = "0.3"
+http-body-util = "0.1"
+rand = "0.9"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["serde", "v7"] }
+
+roundtable-protocol = { path = "crates/roundtable-protocol" }
+roundtable-store = { path = "crates/roundtable-store" }

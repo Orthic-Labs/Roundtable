@@ -11,12 +11,15 @@ Plain-language features derived from the verified claim inventory. Each row poin
 
 - **2026-07-14-agent-room-architecture.md** — Status: **IMPLEMENTED THROUGH P2 · DISPATCH 2 SPEC LOCKED, GATED ON ROUNDTABLE DISPATCH 1 ACCEPTANCE** · rev 2026-07-22e _(source: 2026-07-14-agent-room-architecture.md:3)_
 - **2026-07-22-roundtable-cross-device-architecture.md** — 7. A failed Task 0 Codex co-visibility gate is a hard blocker. Report the captured evidence; do not substitute a hidden CLI-only agent and call the Desktop requirement complete. _(source: 2026-07-22-roundtable-cross-device-architecture.md:39)_
+- **CHANGELOG.md** — **Architecture spec** — `2026-07-22-roundtable-cross-device-architecture.md`: the canonical cross-device design (Locked Protocol, Security Contract, Delivery/Recovery, Cancellation, Tasks 0–13). Sister spec `2026-07-14-agent-room-architecture.md` retained for context. _(source: CHANGELOG.md:9)_
+- **README.md** — `tools/roundtable/crates/roundtable-protocol` — locked v1 enums, canonical JSON, 5 tests _(source: README.md:43)_
+- **SUMMARY.md** — `2026-07-22-roundtable-cross-device-architecture.md` — canonical spec (cross-device rooms, locked protocol, security contract, delivery/recovery, cancellation, Tasks 0–13). _(source: SUMMARY.md:11)_
 
 ## Entry points
 
 User-visible surfaces named by the repository docs:
 
-- _No canonical entry-point docs found._
+- `README.md` _(source: README.md:1)_
 
 ## Honesty / Gaps
 

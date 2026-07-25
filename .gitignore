@@ -35,3 +35,6 @@ _mockups/
 .env.local
 **/.env
 **/.env.local
+
+# local package-manager cache
+.pnpm-store/

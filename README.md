@@ -38,20 +38,30 @@ tools/roundtable/                    # the implementation
 
 ## Status
 
-Scaffolded. Tests pass in the agent worktree that produced each slice:
+**[`STATUS.md`](./STATUS.md) is authoritative.** The numbers below are measured on `main`, not in
+a worktree.
 
-- `tools/roundtable/crates/roundtable-protocol` — locked v1 enums, canonical JSON, 5 tests
-- `tools/roundtable/crates/roundtable-store` — atomic SQLite, dedupe, lease retry/dead-letter, 9 tests
-- `tools/roundtable/crates/roundtable-hub` — auth/origin guard + HTTP + ws + replay, 24 tests
-- `tools/roundtable/crates/roundtable-node` — Codex adapter + IPC, 24 tests
-- `tools/roundtable/packages/web` — Composer/RoomList/RoomView + IndexedDB offline queue, 10 tests
-- `tools/roundtable/packages/claude-channel` — 7 roundtable MCP tools, Zod schemas
+`cargo test --workspace` on a clean `main`: **62 tests, 0 failures.**
+
+| Slice | Tests on `main` | State |
+|---|---|---|
+| `crates/roundtable-protocol` | 5 | real — locked v1 types, canonical JSON |
+| `crates/roundtable-store` | 9 | real — 66KB implementation over the 11-table schema |
+| `crates/roundtable-hub` | 24 | real — axum: auth, http, router, state, ws + 4 suites |
+| `crates/roundtable-node` | 24 | real — Codex JSONL adapter, WS client w/ reconnect, IPC, keyring |
+| `packages/web` | 2 files, unrun | real PWA — no working local package manager, see STATUS |
+| `packages/claude-channel` | — | real — 7 `roundtable_*` MCP tools, Zod schemas |
+
+`main` is the only branch. The hub, store, protocol, PWA, and `tools/agent-room/` broker work
+that previously sat on unmerged branches has been absorbed; those branches are deleted.
+**One real gap:** node and hub speak different wire framings and have never been tested against
+each other — see [`STATUS.md`](./STATUS.md) before touching either.
 
 End-to-end acceptance (Task 12) and Hetzner deployment (Task 11) remain, per the architecture document.
 
 ## Stale claims (CODE-FELL-SHORT)
 
-Five spec items verified as not yet implemented; tracked in `.agent/reconcile.json`:
+Five spec items verified as not yet implemented; tracked in `.agent/stale.json`:
 
 - Hub adoption of `rightkit-logs` (architecture §"RightKit reuse")
 - `MessageKind::SeatInterrupt` + interrupt handler
@@ -63,4 +73,14 @@ These are blockers for the per-scope ship gates and ship with the scaffolding as
 
 ## Status
 
-Pushed to `https://github.com/Orthic-Labs/roundtable` at `main` (HEAD `6e5ac7a`). 4 commits, 47 files, 6.5K insertions.
+Canonical repository: `github.com/Orthic-Labs/roundtable`. See [`STATUS.md`](./STATUS.md).
+
+The push history in CHANGELOG (`3455587` … `210047f`) is genuine — all five commits are ancestors
+of `main` here. A revision of these docs briefly called it fabricated; that check had been run
+from a disconnected copy of this tree inside another workspace and was wrong.
+
+<!-- blueprint:docs:start -->
+## Repository truth docs
+- [Product overview](docs/product.md) — what this is and does (generated, code-grounded)
+- [Architecture](docs/architecture.md) — components, flows, interfaces (generated, code-grounded)
+<!-- blueprint:docs:end -->
