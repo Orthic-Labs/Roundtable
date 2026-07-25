@@ -109,7 +109,7 @@ have come first.
 
 ## Node hub — in progress (2026-07-25)
 
-The port is underway at `tools/roundtable/packages/hub/`. **62 tests, 0 failures**, run with
+The port is underway at `tools/roundtable/packages/hub/`. **76 tests, 0 failures**, run with
 `node --test 'tools/roundtable/packages/hub/src/*.test.mjs'`.
 
 | Slice | State |
@@ -118,9 +118,11 @@ The port is underway at `tools/roundtable/packages/hub/`. **62 tests, 0 failures
 | `src/store.mjs` | done — applies `0001_initial.sql` verbatim; request-dedupe contract ported |
 | `src/ws.mjs` | done — hand-rolled RFC 6455 server; text/ping/pong/close/continuation, all 3 length forms |
 | `src/auth.mjs` | done — `__Host-roundtable`, sha256, constant-time compare, origin guard |
-| `src/server.mjs` | rooms/seats/messages live; handoffs, approvals, /api/nodes still 501 |
+| `src/server.mjs` | **all 16 routes implemented** — rooms, seats, messages, handoffs, approvals, nodes |
 | `main.mjs` | done — smoke-tested standalone: starts, creates the WAL database, serves `/healthz`, login 200 |
-| handoff / approval / nodes handlers | **not started** |
+| handoff / approval / nodes handlers | done — handoff is one transaction; approvals resolve once |
+| delivery dispatch + reconnect replay | done — verified e2e over a real WebSocket |
+| durable event log | done — monotonic cursor, targeted vs broadcast |
 | serving the PWA | **done** — verified against a live hub |
 
 **Zero dependencies, and that is forced rather than stylistic.** `node:sqlite` (built in since Node

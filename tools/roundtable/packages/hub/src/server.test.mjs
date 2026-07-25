@@ -143,10 +143,10 @@ test('declared-but-unported routes return 501, unknown routes 404', async () => 
       method: 'POST', body: JSON.stringify({ token: ADMIN }),
     });
     const cookie = cookieFrom(login);
-    // /api/nodes is declared in the route table but its handler is not ported yet.
+    // Every declared route now has a handler, so nothing should 501. If a future route is
+    // declared without one, the default branch returns 501 and this assertion catches it.
     const known = await fetch(`${base}/api/nodes`, { headers: { cookie } });
-    assert.equal(known.status, 501, 'a declared route must not look like a typo');
-    assert.equal((await known.json()).route, '/api/nodes');
+    assert.equal(known.status, 200, 'every declared route should have a handler');
     assert.equal((await fetch(`${base}/api/nope`, { headers: { cookie } })).status, 404);
   });
 });
@@ -157,9 +157,11 @@ test('path params are captured', async () => {
       method: 'POST', body: JSON.stringify({ token: ADMIN }),
     });
     const cookie = cookieFrom(login);
+    // The param must reach the handler: an unknown id 404s as unknown_node rather than not_found,
+    // which is only possible if :node_id was captured and looked up.
     const res = await fetch(`${base}/api/nodes/node-123`, { headers: { cookie } });
-    assert.equal(res.status, 501);
-    assert.equal((await res.json()).route, '/api/nodes/:node_id');
+    assert.equal(res.status, 404);
+    assert.equal((await res.json()).error, 'unknown_node');
   });
 });
 

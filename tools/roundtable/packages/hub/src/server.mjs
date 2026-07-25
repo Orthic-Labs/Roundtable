@@ -286,6 +286,17 @@ export function createHub({
           send(res, 200, { approval: store.resolveApproval(route.params.approval_id, body?.resolution) });
           return;
         }
+        case '/api/nodes': {
+          send(res, 200, { nodes: store.listNodes(), connected: nodeConnections.size });
+          return;
+        }
+        case '/api/nodes/:node_id': {
+          const found = store.getNode(route.params.node_id);
+          if (!found) { send(res, 404, { error: 'unknown_node' }); return; }
+          const online = [...nodeConnections].some((c) => c.meta?.nodeId === found.id);
+          send(res, 200, { node: { ...found, online } });
+          return;
+        }
         default:
           // Declared but not yet ported. 501 distinguishes "known route, no handler yet" from
           // "no such route", so a partially-ported hub stays legible.

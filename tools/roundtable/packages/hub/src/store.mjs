@@ -140,6 +140,23 @@ export class Store {
     return this.#db.prepare('SELECT * FROM nodes WHERE name = ?').get(name);
   }
 
+  /** Enrolled nodes. token_hash is never returned — it is a credential, not status. */
+  listNodes() {
+    return this.#db
+      .prepare('SELECT id, name, created_at_ms, revoked_at_ms, last_seen_ms FROM nodes ORDER BY name')
+      .all();
+  }
+
+  getNode(id) {
+    return this.#db
+      .prepare('SELECT id, name, created_at_ms, revoked_at_ms, last_seen_ms FROM nodes WHERE id = ?')
+      .get(id) ?? null;
+  }
+
+  touchNode(id) {
+    return this.#db.prepare('UPDATE nodes SET last_seen_ms = ? WHERE id = ?').run(Date.now(), id).changes > 0;
+  }
+
   createSeat({ id = randomUUID(), roomId, nodeId, alias, provider, sessionRef, state = 'attached' }) {
     const now = Date.now();
     try {
