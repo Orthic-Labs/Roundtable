@@ -95,19 +95,43 @@ dispatch. Independently of that gate, there is nothing deployable yet:
 
 | Required by spec | Reality |
 |---|---|
-| `ops/nginx-roundtable.conf` | missing |
-| `ops/roundtable.service` | missing |
-| `ops/backup.sh` | missing |
-| `ops/install-macos.sh`, `ops/install-windows.ps1` | missing |
-| "web assets: embedded in binary" | **not implemented** — the hub has no `rust-embed`/`include_dir`/`ServeDir`; it serves no PWA |
-| Build location | **not Hetzner, and not CI** (Adrian, 2026-07-25). See "Hub language" below — there is currently no deployment path for a Rust hub. |
+| `ops/nginx-roundtable.conf` | **written** — includes the Dockerfile `COPY` check that must pass before any rebuild |
+| `ops/ecosystem.config.cjs` | **written** — pm2, replacing the systemd unit; the box runs 15 other Node services this way |
+| `ops/backup.sh` | **written and smoke-tested** — `.backup` + `integrity_check` + sha256, single self-contained artifact |
+| `ops/install-macos.sh`, `ops/install-windows.ps1` | missing — these install the *node* agent, not the hub |
+| Serving the PWA | still missing — the Node hub returns 501 for it; the PWA is built but unserved |
+| Build location | **moot for the Node hub** — nothing to compile. `git pull` + `pm2 restart`. |
 
 On 2026-07-25 a deploy was attempted before checking any of this: a Rust toolchain was installed on
 the production box and a release build started, against a box running 17 live pm2 services. Both
 were removed (~0.6G). Nothing was served and no live service was affected, but the check should
 have come first.
 
-## Hub language — Rust is probably the wrong choice (open, 2026-07-25)
+## Node hub — in progress (2026-07-25)
+
+The port is underway at `tools/roundtable/packages/hub/`. **38 tests, 0 failures**, run with
+`node --test 'tools/roundtable/packages/hub/src/*.test.mjs'`.
+
+| Slice | State |
+|---|---|
+| `src/wire.mjs` | done — envelope matching the Rust node exactly; all 5 hub→node and 7 node→hub frames |
+| `src/store.mjs` | done — applies `0001_initial.sql` verbatim; request-dedupe contract ported |
+| `src/ws.mjs` | done — hand-rolled RFC 6455 server; text/ping/pong/close/continuation, all 3 length forms |
+| `src/auth.mjs` | done — `__Host-roundtable`, sha256, constant-time compare, origin guard |
+| `src/server.mjs` | partial — all 16 routes declared, health + login/logout/me implemented, rest return 501 |
+| `main.mjs` | done — smoke-tested standalone: starts, creates the WAL database, serves `/healthz`, login 200 |
+| room/message/seat/handoff/approval handlers | **not started** |
+| serving the PWA | **not started** |
+
+**Zero dependencies, and that is forced rather than stylistic.** `node:sqlite` (built in since Node
+22.5; the box runs v26), `node:http`, `node:crypto`, and a hand-rolled WebSocket server because
+`ws` cannot be installed — pnpm is blocked locally as a broken release and npm fails on certificate
+trust. The upside is that deployment has no build step at all.
+
+The Rust hub stays in the tree and green (62 tests) until the Node one replaces it. Nothing is
+broken mid-port.
+
+## Hub language — why the port (decided 2026-07-25)
 
 The hub is Rust because the architecture put hub and node in one workspace so the protocol types
 are defined once and compile-checked on both ends.
