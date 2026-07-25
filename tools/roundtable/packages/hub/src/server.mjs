@@ -1,0 +1,182 @@
+// Node hub HTTP + WebSocket server.
+//
+// Route surface mirrors crates/roundtable-hub/src/{router,http}.rs. Handlers are ported
+// incrementally; every route is declared here from the start so an unimplemented one returns a
+// clear 501 rather than a 404 that looks like a typo.
+
+import { createServer } from 'node:http';
+import { attachWebSocket } from './ws.mjs';
+import {
+  SESSION_COOKIE, hashSecretBytes, tokenMatches, randomToken,
+  sessionCookie, clearSessionCookie, sessionFromHeaders, originAllowed,
+} from './auth.mjs';
+
+const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
+const MAX_BODY_BYTES = 1024 * 1024;
+const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Security headers applied to every response, matching the Rust hub. */
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+};
+
+/** Route table. `:param` segments are captured. */
+const ROUTES = [
+  ['GET', '/healthz'], ['GET', '/readyz'],
+  ['POST', '/api/auth/login'], ['POST', '/api/auth/logout'], ['GET', '/api/me'],
+  ['GET', '/api/rooms'], ['POST', '/api/rooms'],
+  ['GET', '/api/rooms/:room_id'],
+  ['GET', '/api/rooms/:room_id/messages'], ['POST', '/api/rooms/:room_id/messages'],
+  ['GET', '/api/rooms/:room_id/seats'], ['POST', '/api/rooms/:room_id/seats'],
+  ['DELETE', '/api/rooms/:room_id/seats/:seat_id'],
+  ['POST', '/api/rooms/:room_id/handoffs'],
+  ['POST', '/api/approvals/:approval_id/resolve'],
+  ['GET', '/api/nodes'], ['GET', '/api/nodes/:node_id'],
+];
+
+function matchRoute(method, pathname) {
+  const parts = pathname.split('/').filter(Boolean);
+  for (const [m, pattern] of ROUTES) {
+    if (m !== method) continue;
+    const pp = pattern.split('/').filter(Boolean);
+    if (pp.length !== parts.length) continue;
+    const params = {};
+    let ok = true;
+    for (let i = 0; i < pp.length; i += 1) {
+      if (pp[i].startsWith(':')) params[pp[i].slice(1)] = decodeURIComponent(parts[i]);
+      else if (pp[i] !== parts[i]) { ok = false; break; }
+    }
+    if (ok) return { pattern, params };
+  }
+  return null;
+}
+
+function send(res, status, body, extraHeaders = {}) {
+  const payload = body === undefined ? '' : JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    ...SECURITY_HEADERS,
+    ...extraHeaders,
+  });
+  res.end(payload);
+}
+
+async function readBody(req) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) throw Object.assign(new Error('payload too large'), { status: 413 });
+    chunks.push(chunk);
+  }
+  if (total === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw Object.assign(new Error('invalid JSON'), { status: 400 });
+  }
+}
+
+/**
+ * Build the hub.
+ *
+ * `adminToken` is the operator's login secret; only its digest is retained.
+ * `secure` controls the cookie's Secure attribute — false only for local HTTP testing.
+ */
+export function createHub({ store, adminToken, secure = true, allowedOrigins = [] }) {
+  if (!adminToken) throw new Error('adminToken is required');
+  const adminDigest = hashSecretBytes(adminToken);
+  const sessions = new Map(); // token -> expiresAtMs
+  const nodeConnections = new Set();
+
+  const authed = (req) => {
+    const token = sessionFromHeaders(req.headers);
+    if (!token) return false;
+    const expires = sessions.get(token);
+    if (!expires) return false;
+    if (expires < Date.now()) { sessions.delete(token); return false; }
+    return true;
+  };
+
+  const server = createServer(async (req, res) => {
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      send(res, 400, { error: 'bad request' });
+      return;
+    }
+
+    // Health endpoints are unauthenticated: systemd and nginx poll them.
+    if (url.pathname === '/healthz' || url.pathname === '/readyz') {
+      send(res, 200, { status: 'ok' });
+      return;
+    }
+
+    if (MUTATING.has(req.method) && !originAllowed(req.headers.origin, allowedOrigins)) {
+      send(res, 403, { error: 'origin_not_allowed' });
+      return;
+    }
+
+    const route = matchRoute(req.method, url.pathname);
+    if (!route) { send(res, 404, { error: 'not_found' }); return; }
+
+    try {
+      if (route.pattern === '/api/auth/login') {
+        const body = await readBody(req);
+        if (!tokenMatches(adminDigest, body?.token ?? '')) {
+          send(res, 401, { error: 'invalid_token' });
+          return;
+        }
+        const token = randomToken();
+        sessions.set(token, Date.now() + SESSION_MAX_AGE * 1000);
+        send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(token, secure, SESSION_MAX_AGE) });
+        return;
+      }
+
+      if (route.pattern === '/api/auth/logout') {
+        const token = sessionFromHeaders(req.headers);
+        if (token) sessions.delete(token);
+        send(res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookie(secure) });
+        return;
+      }
+
+      if (!authed(req)) { send(res, 401, { error: 'unauthenticated' }); return; }
+
+      if (route.pattern === '/api/me') { send(res, 200, { authenticated: true }); return; }
+
+      // Remaining routes are declared but not yet ported. 501 distinguishes "known route, no
+      // handler yet" from "no such route", so a partially-ported hub is legible.
+      send(res, 501, { error: 'not_implemented', route: route.pattern });
+    } catch (e) {
+      send(res, e.status ?? 500, { error: e.message ?? 'internal_error' });
+    }
+  });
+
+  attachWebSocket(server, (conn, req) => {
+    const path = new URL(req.url, 'http://localhost').pathname;
+    if (path !== '/node/connect' && path !== '/api/events') {
+      conn.close(1008, 'unknown websocket path');
+      return;
+    }
+    nodeConnections.add(conn);
+    conn.on('close', () => nodeConnections.delete(conn));
+  });
+
+  return {
+    server,
+    // Exposed for tests and for the eventual delivery loop.
+    get sessionCount() { return sessions.size; },
+    get connectionCount() { return nodeConnections.size; },
+    store,
+    listen: (port, host = '127.0.0.1') => new Promise((resolve) => {
+      server.listen(port, host, () => resolve(server.address()));
+    }),
+    close: () => new Promise((resolve) => { for (const c of nodeConnections) c.close(1001, 'shutdown'); server.close(resolve); }),
+  };
+}
+
+export { SESSION_COOKIE };
