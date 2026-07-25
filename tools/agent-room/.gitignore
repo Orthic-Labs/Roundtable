@@ -1,0 +1,4 @@
+rooms.db
+rooms.db-*
+__pycache__/
+*.pyc

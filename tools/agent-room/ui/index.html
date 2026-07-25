@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent Room</title>
+<style>
+  :root{--bg:#111722;--surface:#1b2130;--border:#2d3547;--text:#f4efe7;
+        --muted:#98a2b3;--accent:#3fa3de;--me:#0c6aa5;--held:#b8860b;}
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+       background:var(--bg);color:var(--text);height:100dvh;display:flex;flex-direction:column}
+  header{padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);
+         display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  header b{font-weight:600}
+  #roster{margin-left:auto;font-size:12px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap}
+  #roster .a{background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:2px 9px}
+  #pausebtn{background:var(--bg);color:var(--text);border:1px solid var(--border);
+            border-radius:8px;padding:5px 10px;cursor:pointer}
+  #pausebtn.on{background:var(--held);border-color:var(--held);color:#000}
+  #log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .m{max-width:82%;padding:8px 12px;border-radius:12px;background:var(--surface);
+     border:1px solid var(--border);word-wrap:break-word;white-space:pre-wrap}
+  .m .who{font-size:12px;color:var(--accent);font-weight:600;margin-bottom:2px}
+  .m.me{align-self:flex-end;background:var(--me);border-color:var(--me)}
+  .m.me .who{color:#cfe8fb}
+  .m.held{border-color:var(--held);border-style:dashed}
+  .m .ack{margin-top:6px;font-size:12px;background:var(--held);color:#000;border:none;
+          border-radius:6px;padding:3px 10px;cursor:pointer}
+  .sys{align-self:center;font-size:12px;color:var(--muted)}
+  form{display:flex;gap:8px;padding:10px;background:var(--surface);border-top:1px solid var(--border);
+       padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+  #to{width:120px}
+  input,select{background:var(--bg);color:var(--text);border:1px solid var(--border);
+        border-radius:8px;padding:9px 10px;font:inherit}
+  #body{flex:1}
+  button.send{background:var(--accent);color:#001;border:none;border-radius:8px;
+              padding:9px 16px;font-weight:600;cursor:pointer}
+  #setup{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;
+         justify-content:center;padding:20px;z-index:10}
+  #setup .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+        padding:22px;width:min(420px,100%);display:flex;flex-direction:column;gap:12px}
+  #setup h1{margin:0 0 4px;font-size:20px}
+  #setup label{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="setup"><div class="card">
+  <h1>Agent Room</h1>
+  <label>Server (wss://host/path — no /ws)</label>
+  <input id="s_url" placeholder="wss://your.box/agentroom">
+  <label>Room</label><input id="s_room" value="memright">
+  <label>Your name</label><input id="s_name" value="adrian">
+  <label>Token</label><input id="s_token" type="password" placeholder="bearer token">
+  <button class="send" onclick="join()">Enter room</button>
+</div></div>
+
+<header>
+  <b>Agent Room</b> · <span id="roomname" class="sys"></span>
+  <button id="pausebtn" onclick="togglePause()">⏸ Pause agents</button>
+  <div id="roster"></div>
+</header>
+<div id="log"></div>
+<form onsubmit="return sendMsg(event)">
+  <input id="to" value="@all" title="@all, @codex, @mac-claude …">
+  <input id="body" placeholder="message… use @name to address an agent" autocomplete="off">
+  <button class="send">Send</button>
+</form>
+
+<script>
+let ws, me, paused=false;
+const log=document.getElementById('log'), roster=document.getElementById('roster');
+
+function join(){
+  const url=document.getElementById('s_url').value.trim();
+  const room=document.getElementById('s_room').value.trim();
+  me=document.getElementById('s_name').value.trim();
+  const token=document.getElementById('s_token').value.trim();
+  document.getElementById('roomname').textContent=room;
+  const q=new URLSearchParams({room,agent:me,kind:'human',token});
+  ws=new WebSocket(`${url}/ws?${q}`);
+  ws.onopen=()=>{document.getElementById('setup').style.display='none';};
+  ws.onclose=()=>sys('disconnected — reconnecting…')||setTimeout(join,2000);
+  ws.onmessage=e=>handle(JSON.parse(e.data));
+}
+function handle(f){
+  if(f.type==='history'){log.innerHTML='';f.messages.forEach(addMsg);scroll();}
+  else if(f.type==='msg'){addMsg(f);scroll();}
+  else if(f.type==='held'){addMsg({...f,held:true});scroll();}
+  else if(f.type==='roster'){roster.innerHTML=f.agents.map(a=>
+        `<span class="a">${a.kind==='human'?'🧑':a.kind==='exec'?'⚙️':'🤖'} ${a.name}</span>`).join('');}
+  else if(f.type==='paused'){paused=f.on;const b=document.getElementById('pausebtn');
+        b.classList.toggle('on',paused);b.textContent=paused?'▶ Resume agents':'⏸ Pause agents';}
+}
+function addMsg(m){
+  const d=document.createElement('div');
+  d.className='m'+(m.frm===me?' me':'')+(m.held?' held':'');
+  const to=(m.to||[]).join(' ');
+  d.innerHTML=`<div class="who">${m.frm} <span style="color:var(--muted);font-weight:400">→ ${to}</span></div>`;
+  d.appendChild(document.createTextNode(m.body));
+  if(m.held){const b=document.createElement('button');b.className='ack';
+    b.textContent='✔ release (loop-guard)';b.onclick=()=>ws.send(JSON.stringify({type:'ack',ref:m.id}));
+    d.appendChild(b);}
+  log.appendChild(d);
+}
+function sys(t){const d=document.createElement('div');d.className='sys';d.textContent=t;log.appendChild(d);scroll();}
+function sendMsg(e){e.preventDefault();
+  const body=document.getElementById('body'),to=document.getElementById('to');
+  if(!body.value.trim())return false;
+  ws.send(JSON.stringify({type:'say',to:to.value.trim().split(/\s+/),body:body.value.trim()}));
+  body.value='';return false;}
+function togglePause(){ws.send(JSON.stringify({type:'pause',on:!paused}));}
+function scroll(){log.scrollTop=log.scrollHeight;}
+</script>
+</body>
+</html>
