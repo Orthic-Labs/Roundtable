@@ -440,7 +440,22 @@ export function createHub({
 
         // Replay anything missed while disconnected, before any new event is sent. Without this
         // a node that drops mid-delivery silently loses it.
+        //
+        // Delivery-recovery rule 8: "A completed delivery is never reinjected." The node does not
+        // advance its own cursor (it echoes back whatever the handshake gave it), so it reconnects
+        // at 0 and the hub would otherwise replay EVERY delivery it has ever sent — re-running
+        // finished work on every reconnect. Observed live: one message produced a duplicate reply
+        // and a run of "no active turn to steer" errors. Terminal deliveries are skipped here, so
+        // replay carries only work that is genuinely still outstanding.
         for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId })) {
+          if (evt.type === HubFrame.DELIVERY_ASSIGN) {
+            const id = evt.payload?.delivery_assign?.delivery?.id;
+            const current = id ? store.getDelivery(id) : null;
+            if (!current || !['queued', 'sent'].includes(current.state)) {
+              conn.meta.cursor = evt.cursor; // consumed, deliberately not re-sent
+              continue;
+            }
+          }
           conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload)));
           conn.meta.cursor = evt.cursor;
         }
