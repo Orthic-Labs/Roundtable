@@ -19,9 +19,10 @@ wins. Regenerate or correct them; do not resolve the conflict in their favour.
 protocol, and PWA work that previously lived only on unmerged branches has been absorbed into
 `main`, and those branches are deleted.
 
-One integration gap is real and documented rather than papered over: **the node client and the
-hub speak different wire framings** (see below). Both compile and both pass their own tests; they
-have never been tested against each other.
+One integration gap is real and documented rather than papered over: **the node binary cannot
+connect to any hub yet** — it never constructs its own client, and it has no WebSocket transport
+(see below). Everything compiles and every suite passes; they have never been tested against each
+other, and the passing suites do not imply they could be.
 
 ## Measured test counts on `main`
 
@@ -50,7 +51,37 @@ branches. All are now in `main`:
 
 A full `git bundle --all` backup was taken and verified before any deletion.
 
-## Known gap: node and hub speak different wire framings
+## Known gap: the node cannot connect to any hub yet (widened 2026-07-25)
+
+Previously recorded here as "different wire framings". On inspection it is three separate gaps,
+and the framing one is now the *smallest*:
+
+1. **`roundtable-node`'s binary never connects.** `crates/roundtable-node/src/main.rs` loads the
+   config, state, and token, logs `roundtable-node ready`, then ends with
+   `let _ = (cfg, state, token); Ok(())`. The `HubClient` in `hub.rs` is real and has 24 passing
+   tests, but nothing in the binary constructs it. The node is a stub that reports success.
+2. **The node has no WebSocket transport.** Its only `HubTransport` implementation is
+   `TcpHubChannel` — raw TCP with NDJSON framing — and there is no `tokio-tungstenite` or
+   equivalent in `crates/roundtable-node/Cargo.toml`. The config field is named `hub_url` and the
+   test fixture uses `ws://localhost`, but that is aspirational: nothing speaks WebSocket.
+   The Node hub, the architecture, and nginx all assume outbound WSS.
+3. **The framings differ** (below), which only matters once 1 and 2 are solved.
+
+Consequence: **no end-to-end Mac↔hub round trip is possible today**, and the node's green test
+suite does not contradict that — it exercises `HubClient` against a TCP fixture
+(`fixtures/hub/fake-hub.mjs`), not the binary and not a WebSocket.
+
+Two ways to close it, neither started:
+
+- **Add a WebSocket transport to the Rust node** (a `tokio-tungstenite` dependency plus a second
+  `HubTransport` impl) and wire `main.rs` to construct `HubClient`. This is the production shape —
+  WSS is what traverses nginx.
+- **Teach the Node hub to also accept raw TCP NDJSON** on a separate port. Much smaller, since the
+  wire codec already exists and the framing is line-delimited JSON, and it would prove the protocol
+  between the real Rust node and the Node hub today. But TCP cannot traverse nginx, so it is a
+  local-testing bridge, not the deployment path.
+
+## Known gap: node and hub wire framings
 
 This is the one place the two eras did not reconcile, and it is deliberately **not** hidden
 behind a compiling build:
