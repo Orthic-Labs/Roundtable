@@ -668,14 +668,19 @@ asking Adrian to run the sudo rebuild.
 3. The canonical repository is `github.com/Orthic-Labs/roundtable`, not the workspace repo. On the
    box the checkout is `~/sites/roundtable`; clone it there if absent, then
    `git fetch origin && git checkout main && git pull --ff-only origin main`.
-4. **Do NOT build on Hetzner (Adrian, 2026-07-25).** No Rust toolchain is installed on the
-   production box and none is to be installed: the box runs 17 live pm2 services on 4 CPUs, and a
-   release build of this workspace (bundled SQLite, tokio, axum) competes directly with them. CI
-   builds the `x86_64-unknown-linux-gnu` binary and the PWA; the box only ever downloads the
-   artifact to `/opt/roundtable/bin/roundtable-hub` and restarts the unit. The earlier instruction
-   here — `cargo build --release` on Ubuntu — was followed once on 2026-07-25, installing a
-   toolchain and starting a build on the live box; both were removed and the instruction is
-   retired.
+4. **Do NOT build on Hetzner, and do NOT add CI (Adrian, 2026-07-25).** No Rust toolchain is
+   installed on the production box and none is to be installed: it runs 17 live pm2 services on 4
+   CPUs, and a release build of this workspace (bundled SQLite, tokio, axum) competes directly with
+   them. The earlier instruction here — `cargo build --release` on Ubuntu — was followed once on
+   2026-07-25, installing a toolchain and starting a build on the live box; both were removed.
+
+   **Hosted CI is also out.** No `.github/workflows`, no Buildkite/CircleCI/GitLab/Azure, no
+   self-hosted runners. This is a standing workspace decision, not a Roundtable one.
+
+   That leaves a genuine constraint with no clean answer today: this Mac is `arm64`, the box is
+   `x86_64`, and no cross toolchain is installed (`zig`, `cargo-zigbuild`, `cross`, and `docker`
+   are all absent). **A Rust hub therefore has no deployment path that does not add new tooling
+   somewhere.** See "Hub language" below before writing any deploy script.
 5. Stage the binary, unit, env, and data directories. Secret generation is performed in a shell that
    does not echo command tracing; the token is written directly to `/etc/roundtable/roundtable.env`
    and never printed.

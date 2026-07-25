@@ -100,12 +100,44 @@ dispatch. Independently of that gate, there is nothing deployable yet:
 | `ops/backup.sh` | missing |
 | `ops/install-macos.sh`, `ops/install-windows.ps1` | missing |
 | "web assets: embedded in binary" | **not implemented** — the hub has no `rust-embed`/`include_dir`/`ServeDir`; it serves no PWA |
-| Build location | **must not be Hetzner** (Adrian, 2026-07-25). CI produces the linux binary; the box downloads it. |
+| Build location | **not Hetzner, and not CI** (Adrian, 2026-07-25). See "Hub language" below — there is currently no deployment path for a Rust hub. |
 
 On 2026-07-25 a deploy was attempted before checking any of this: a Rust toolchain was installed on
 the production box and a release build started, against a box running 17 live pm2 services. Both
 were removed (~0.6G). Nothing was served and no live service was affected, but the check should
 have come first.
+
+## Hub language — Rust is probably the wrong choice (open, 2026-07-25)
+
+The hub is Rust because the architecture put hub and node in one workspace so the protocol types
+are defined once and compile-checked on both ends.
+
+**That justification is not currently being delivered.** Node and hub speak different wire
+framings (see the gap above): `WsEnvelope` flattens its event, node's client expects a nested
+`payload` under a `type` tag. The shared-type benefit is fictional today, so the project is paying
+Rust's deployment cost and collecting none of its upside.
+
+Against Rust, for the hub specifically:
+
+- **It is I/O-bound, not CPU-bound.** WebSocket fan-out, SQLite writes, HTTP — for one operator
+  with 2–4 machines, Rust's performance advantage is irrelevant.
+- **The box is a Node box.** 15 of 17 pm2 services run `node`, one `bash`, one binary. A Node hub
+  is `git pull` + `pm2 restart`, identical to how `rightsites` already deploys.
+- **There is no deployment path.** No building on the box, no CI, `arm64` Mac vs `x86_64` box, and
+  no cross toolchain installed. Shipping a Rust binary requires adding tooling somewhere.
+
+For Rust, and not to be dismissed:
+
+- The hub is **written and tested** — 24 tests across auth/delivery/http/reconnect, plus a ~2,000
+  line store with 9 tests. A rewrite discards that and reintroduces solved bugs.
+- **`roundtable-node` should stay Rust regardless.** It runs invisibly at login on Mac and Windows,
+  wants a single binary with no runtime, and touches the OS keychain. That is Rust earning its
+  keep; the hub is not.
+
+**Recommended sequencing:** do not rewrite against an unsettled protocol. The wire framing is
+unresolved, so a port now would be rewritten twice. Settle the framing first, prove the thing runs
+end to end, then port the hub to Node/TypeScript and keep the node in Rust — a clean split along
+the line where each language actually pays.
 
 ## Genuinely-absent spec items
 
