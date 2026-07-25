@@ -49,15 +49,34 @@ const nodeFrame = (type, payload = {}) => JSON.stringify({
 async function connectAsNode(wsBase, nodeId, { resumeCursor = 0 } = {}) {
   const client = new WebSocket(`${wsBase}/node/connect`);
   await once(client, 'open');
+
+  // Collect EVERY frame from the moment the socket opens, before the handshake is sent.
+  //
+  // This is not belt-and-braces: on reconnect the hub sends hello.accepted and the replayed
+  // delivery.assign frames back to back in the same tick. Awaiting them one at a time with
+  // `once()` loses any frame that arrived before the next listener attached, and the test then
+  // waits forever for a message already delivered. That race — not batch position, and not the
+  // environment — is what hung `node --test` in this file for weeks.
+  client.frames = [];
+  client.addEventListener('message', (e) => client.frames.push(JSON.parse(e.data)));
+  /** Resolve once a frame of `type` has arrived, whether it landed before or after this call. */
+  client.waitFor = async (type, timeoutMs = 2000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const found = client.frames.find((f) => f.type === type);
+      if (found) return found;
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${type}; got ${client.frames.map((f) => f.type).join(',') || 'nothing'}`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+
   client.send(nodeFrame(NodeFrame.HELLO, {
     hello: {
       node_id: nodeId, token: NODE_TOKEN, hostname: 'mac', os: 'macos',
       version: '0.1.0', resume_cursor: resumeCursor,
     },
   }));
-  const [evt] = await once(client, 'message');
-  const frame = JSON.parse(evt.data);
-  assert.equal(frame.type, 'hello.accepted');
+  await client.waitFor('hello.accepted');
   return client;
 }
 
@@ -135,8 +154,8 @@ test('E2E: a reconnecting node replays what it missed from its cursor', async ()
     // Reconnect from cursor 0 — everything addressed to this node replays, after its own
     // hello.accepted (which every connection gets, replayed or not).
     const second = await connectAsNode(wsBase, node.id, { resumeCursor: 0 });
-    const [evt] = await once(second, 'message');
-    assert.match(JSON.parse(evt.data).payload.delivery_assign.message.body, /missed-me/);
+    const replayed = await second.waitFor('delivery.assign');
+    assert.match(replayed.payload.delivery_assign.message.body, /missed-me/);
     second.close();
   });
 });

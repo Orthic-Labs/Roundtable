@@ -622,7 +622,31 @@ export function createHub({
     listen: (port, host = '127.0.0.1') => new Promise((resolve) => {
       server.listen(port, host, () => resolve(server.address()));
     }),
-    close: () => new Promise((resolve) => { for (const c of nodeConnections) c.close(1001, 'shutdown'); server.close(resolve); }),
+    /**
+     * Shut down, and actually finish doing so.
+     *
+     * `server.close()` stops accepting NEW connections and then waits for every existing one to
+     * end. A WebSocket upgrade holds its socket open indefinitely by design, so a polite
+     * `c.close(1001)` is not enough: if the peer does not complete the closing handshake — a test
+     * client that never closed, a node on a dead network — `server.close()` never calls back and
+     * the process hangs forever.
+     *
+     * That is the real cause of the "test-runner quirk" this repo documented for weeks: any test
+     * file that opened a hub and left a client socket open hung `node --test`, which looked
+     * environmental because it depended on batch position. It is not environmental — the hub
+     * genuinely could not shut down.
+     *
+     * closeAllConnections() (Node 18.2+) destroys the sockets outright, which is what a shutdown
+     * actually means here.
+     */
+    close: () => new Promise((resolve) => {
+      for (const c of nodeConnections) {
+        try { c.close(1001, 'shutdown'); } catch { /* already gone */ }
+      }
+      nodeConnections.clear();
+      server.close(resolve);
+      server.closeAllConnections();
+    }),
   };
   return api;
 }
