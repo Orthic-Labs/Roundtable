@@ -99,8 +99,9 @@ Hub URL is `wss://roundtable.spoares.com/node/connect`. No tunnel, no VPN; the n
 - **rustls has no default crypto provider.** Already fixed in `main.rs` (`ring` installed
   explicitly before the first dial) — do not remove it. Without it the node runs fine over `ws://`
   and panics on the first `wss://`, exiting 0, so a keep-alive supervisor will not even restart it.
-  `ring` was chosen over `aws-lc-rs` specifically because it needs no cmake/NASM, which keeps this
-  Windows build simple. Do not switch it.
+  `ring` was chosen over `aws-lc-rs` because aws-lc-rs additionally needs cmake and NASM. `ring`
+  still needs a **C compiler** — that is exactly what the failed cross-compile above hit — but on
+  Windows the MSVC build tools you already need for Rust provide it. Do not switch it.
 - **Never pipe the Codex child's stderr without draining it.** `codex.rs` spawns a drain task; a
   full pipe buffer blocks the child forever and presents as "handshake succeeds, then everything
   hangs". This is platform-independent and already handled — just do not undo it.
