@@ -7,10 +7,13 @@
 //
 // There is nothing to compile and nothing to install. Do NOT add a build step here.
 //
-// Secrets are NOT in this file. ROUND_TABLE_ADMIN_TOKEN comes from the environment file below,
-// which is created out-of-band with mode 0600 and never committed:
+// Secrets are NOT in this file. pm2 has NO native env-file support, so the token is not inlined
+// here and not loaded from a shell wrapper — main.mjs reads it from the path below at startup
+// (ROUND_TABLE_ADMIN_TOKEN_FILE). Create it out-of-band, 0600, owned by the user pm2 runs as:
 //
-//   /etc/roundtable/roundtable.env      (root-owned, 0600)
+//   install -m 700 -d ~/.config/roundtable
+//   openssl rand -hex 32 > ~/.config/roundtable/admin-token
+//   chmod 600 ~/.config/roundtable/admin-token
 //
 // Start once with:
 //   pm2 start ops/ecosystem.config.cjs && pm2 save
@@ -31,7 +34,10 @@ module.exports = {
       NODE_ENV: 'production',
       // Bind to the Docker gateway so the containerised nginx can reach it; not 0.0.0.0.
       ROUND_TABLE_BIND: '172.22.0.1:8460',
-      ROUND_TABLE_DATABASE: '/var/lib/roundtable/roundtable.sqlite3',
+      // Under ~, not /var/lib: the vendure user owns this and needs no sudo to back it up or
+      // move it. Nothing on this box requires the database to live outside the home directory.
+      ROUND_TABLE_DATABASE: '/home/vendure/.local/share/roundtable/roundtable.sqlite3',
+      ROUND_TABLE_ADMIN_TOKEN_FILE: '/home/vendure/.config/roundtable/admin-token',
       ROUND_TABLE_ORIGINS: 'https://roundtable.spoares.com',
     },
     out_file: '/home/vendure/.pm2/logs/roundtable-hub-out.log',

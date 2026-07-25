@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Roundtable SQLite backup.
 #
-# Uses sqlite3 .backup rather than cp: the hub runs in WAL mode, so copying the .sqlite3 file
-# alone can capture a torn snapshot with its -wal unmerged. .backup takes a consistent copy of a
-# live database.
+# Uses node:sqlite's native backup() rather than `cp`: the hub runs in WAL mode, so copying the
+# .sqlite3 file alone can capture a torn snapshot with its -wal unmerged. backup() takes a
+# consistent copy of a live database.
+#
+# It uses NODE, not the sqlite3 CLI, because the sqlite3 CLI is NOT installed on the box and
+# installing it needs sudo. Node is already there (the hub runs on it) and node:sqlite exposes
+# both backup() and integrity_check — so this script needs no packages and no root.
 #
 # Exits nonzero if integrity_check does not return exactly "ok", so a silently corrupt backup
 # fails the job instead of being retained as if it were good.
@@ -12,31 +16,46 @@
 
 set -Eeuo pipefail
 
-DB="${ROUND_TABLE_DATABASE:-/var/lib/roundtable/roundtable.sqlite3}"
-DEST="${ROUND_TABLE_BACKUP_DIR:-/var/backups/roundtable}"
+DB="${ROUND_TABLE_DATABASE:-$HOME/.local/share/roundtable/roundtable.sqlite3}"
+DEST="${ROUND_TABLE_BACKUP_DIR:-$HOME/backups/roundtable}"
 RETAIN_DAYS="${ROUND_TABLE_BACKUP_RETAIN:-14}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$DEST/roundtable-$STAMP.sqlite3"
 
-command -v sqlite3 >/dev/null || { echo "backup: sqlite3 not installed" >&2; exit 1; }
+command -v node >/dev/null || { echo "backup: node not installed" >&2; exit 1; }
 [ -f "$DB" ] || { echo "backup: database not found at $DB" >&2; exit 1; }
 mkdir -p "$DEST"
 
-sqlite3 "$DB" ".backup '$OUT'"
-
-check="$(sqlite3 "$OUT" 'PRAGMA integrity_check;')"
-if [ "$check" != "ok" ]; then
-  echo "backup: integrity_check FAILED for $OUT: $check" >&2
-  rm -f "$OUT"
+# backup() is async and returns a promise. integrity_check runs against the COPY, so a corrupt
+# result condemns the artifact about to be retained, not the live database.
+if ! DB="$DB" OUT="$OUT" node --input-type=module -e '
+import { DatabaseSync, backup } from "node:sqlite";
+const src = new DatabaseSync(process.env.DB, { readOnly: true });
+await backup(src, process.env.OUT);
+src.close();
+const copy = new DatabaseSync(process.env.OUT);
+const result = Object.values(copy.prepare("PRAGMA integrity_check").get())[0];
+if (result !== "ok") {
+  console.error(`integrity_check FAILED: ${result}`);
+  process.exit(1);
+}
+// The check opened the copy in WAL mode; fold the sidecars back in so the retained artifact is a
+// single self-contained file and the checksum covers all of it.
+copy.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+copy.close();
+'; then
+  echo "backup: FAILED for $OUT" >&2
+  rm -f "$OUT" "$OUT-wal" "$OUT-shm"
   exit 1
 fi
 
-# The integrity check opens the copy, which leaves -wal/-shm sidecars next to it. Checkpoint them
-# away so the retained artifact is a single self-contained file and the checksum covers all of it.
-sqlite3 "$OUT" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null 2>&1 || true
 rm -f "$OUT-wal" "$OUT-shm"
 
-sha256sum "$OUT" > "$OUT.sha256"
+if command -v sha256sum >/dev/null; then
+  sha256sum "$OUT" > "$OUT.sha256"
+else
+  shasum -a 256 "$OUT" > "$OUT.sha256"   # macOS
+fi
 
 find "$DEST" -name 'roundtable-*.sqlite3' -type f -mtime "+$RETAIN_DAYS" -print -delete
 find "$DEST" -name 'roundtable-*.sqlite3.sha256' -type f -mtime "+$RETAIN_DAYS" -delete

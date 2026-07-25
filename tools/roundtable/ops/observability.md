@@ -96,7 +96,7 @@ tail -n 5000 ~/.pm2/logs/roundtable-hub-out.log | jq -c 'select(.duration_ms > 1
 you where it stopped:
 
 ```bash
-sqlite3 ~/roundtable/roundtable.db \
+sqlite3 ~/.local/share/roundtable/roundtable.sqlite3 \
   "SELECT id, seat_id, state, attempt, error_code, datetime(updated_at_ms/1000,'unixepoch')
    FROM deliveries WHERE id = '<delivery_id>';"
 ```
@@ -104,7 +104,7 @@ sqlite3 ~/roundtable/roundtable.db \
 **Recent cancels** (per the architecture's Cancellation contract §7 audit trail):
 
 ```bash
-sqlite3 ~/roundtable/roundtable.db \
+sqlite3 ~/.local/share/roundtable/roundtable.sqlite3 \
   "SELECT id, room_id, seat_id, error_code, datetime(created_at_ms/1000,'unixepoch')
    FROM deliveries WHERE error_code LIKE 'canceled_%' ORDER BY created_at_ms DESC LIMIT 100;"
 ```
@@ -112,7 +112,7 @@ sqlite3 ~/roundtable/roundtable.db \
 **Stuck deliveries** (queued with no connected node, or a lease that expired):
 
 ```bash
-sqlite3 ~/roundtable/roundtable.db \
+sqlite3 ~/.local/share/roundtable/roundtable.sqlite3 \
   "SELECT id, seat_id, state, attempt, lease_until_ms FROM deliveries
    WHERE state IN ('queued','sent','acked','running') ORDER BY created_at_ms DESC LIMIT 50;"
 ```
