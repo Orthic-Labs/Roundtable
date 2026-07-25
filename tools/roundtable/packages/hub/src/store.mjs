@@ -39,13 +39,24 @@ export class Store {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA foreign_keys = ON');
     db.exec('PRAGMA busy_timeout = 5000');
-    let sql;
-    try {
-      sql = readFileSync(migrationPath, 'utf8');
-    } catch (e) {
-      throw new StoreError(`cannot read migration at ${migrationPath}: ${e.message}`);
+    db.exec('PRAGMA synchronous = NORMAL');
+
+    // Guarded by user_version, exactly as the Rust store does it (see roundtable-store's
+    // `open_connection`). Without this the migration is re-applied on every open and the SECOND
+    // start against a persistent database dies with "table rooms already exists" — the hub comes
+    // up once on a fresh file and can never restart. Every test opens ':memory:', so nothing
+    // caught it until a real restart on the box did.
+    const version = Number(Object.values(db.prepare('PRAGMA user_version').get())[0] ?? 0);
+    if (version === 0) {
+      let sql;
+      try {
+        sql = readFileSync(migrationPath, 'utf8');
+      } catch (e) {
+        throw new StoreError(`cannot read migration at ${migrationPath}: ${e.message}`);
+      }
+      db.exec(sql);
+      db.exec('PRAGMA user_version = 1');
     }
-    db.exec(sql);
     return new Store(db);
   }
 

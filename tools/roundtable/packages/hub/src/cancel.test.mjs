@@ -7,6 +7,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Store } from './store.mjs';
 
 function fixture() {
@@ -144,4 +147,28 @@ test('a revoked node is refused even with the right token', () => {
   const node = store.registerNode({ name: 'mac', tokenHash: Store.hashNodeToken('t') });
   store.raw.prepare('UPDATE nodes SET revoked_at_ms = ? WHERE id = ?').run(Date.now(), node.id);
   assert.equal(store.verifyNodeToken(node.id, 't'), null);
+});
+
+// ---- restart safety --------------------------------------------------------
+
+test('a store can be reopened — the migration is not re-applied on restart', () => {
+  // Every other test opens ':memory:', which is always fresh, so none of them could catch this:
+  // the hub started fine on a new database and then died with "table rooms already exists" on its
+  // FIRST restart, because Store.open re-ran the migration unconditionally. Guarded by
+  // user_version now, matching roundtable-store's open_connection.
+  const dir = mkdtempSync(join(tmpdir(), 'rt-store-'));
+  const path = join(dir, 'reopen.sqlite3');
+
+  const first = Store.open(path);
+  const room = first.createRoom({ slug: 'persist', title: 'Persist' });
+  first.close();
+
+  const second = Store.open(path); // must not throw
+  assert.equal(second.getRoom(room.id).slug, 'persist', 'data must survive the reopen');
+  second.close();
+
+  const third = Store.open(path); // and again
+  assert.ok(third.tables().includes('rooms'));
+  third.close();
+  rmSync(dir, { recursive: true, force: true });
 });
