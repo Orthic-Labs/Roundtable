@@ -665,11 +665,17 @@ asking Adrian to run the sudo rebuild.
 1. Push the implementation commit to `origin/main` from the laptop.
 2. Verify SSH with `ssh -o BatchMode=yes vendure 'printf ready'` on Mac. On Windows use the fixed
    `SSH_AUTH_SOCK=/tmp/ssh-dd-sock` recipe in `.claude/rules/ssh-server-access.md`.
-3. On the box, use `~/claude` as the checkout. If it does not exist, clone
-   `git@github.com:bogusyogi/claude.git` there. Then run
-   `cd ~/claude && git fetch origin && git checkout main && git pull --ff-only origin main`.
-4. Build on Ubuntu with
-   `cargo build --release --manifest-path ~/claude/tools/roundtable/Cargo.toml -p roundtable-hub`.
+3. The canonical repository is `github.com/Orthic-Labs/roundtable`, not the workspace repo. On the
+   box the checkout is `~/sites/roundtable`; clone it there if absent, then
+   `git fetch origin && git checkout main && git pull --ff-only origin main`.
+4. **Do NOT build on Hetzner (Adrian, 2026-07-25).** No Rust toolchain is installed on the
+   production box and none is to be installed: the box runs 17 live pm2 services on 4 CPUs, and a
+   release build of this workspace (bundled SQLite, tokio, axum) competes directly with them. CI
+   builds the `x86_64-unknown-linux-gnu` binary and the PWA; the box only ever downloads the
+   artifact to `/opt/roundtable/bin/roundtable-hub` and restarts the unit. The earlier instruction
+   here — `cargo build --release` on Ubuntu — was followed once on 2026-07-25, installing a
+   toolchain and starting a build on the live box; both were removed and the instruction is
+   retired.
 5. Stage the binary, unit, env, and data directories. Secret generation is performed in a shell that
    does not echo command tracing; the token is written directly to `/etc/roundtable/roundtable.env`
    and never printed.

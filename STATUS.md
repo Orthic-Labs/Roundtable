@@ -88,6 +88,25 @@ widened to match.
   source files that only now exist, and calls `roundtable-node` an "empty placeholder" when it is
   a 1,409-line crate. Regenerate it before trusting it.
 
+## Deployment is NOT ready (Task 11)
+
+Task 11 is gated by the architecture as production mutation requiring an explicit `DEPLOY TASK 11`
+dispatch. Independently of that gate, there is nothing deployable yet:
+
+| Required by spec | Reality |
+|---|---|
+| `ops/nginx-roundtable.conf` | missing |
+| `ops/roundtable.service` | missing |
+| `ops/backup.sh` | missing |
+| `ops/install-macos.sh`, `ops/install-windows.ps1` | missing |
+| "web assets: embedded in binary" | **not implemented** — the hub has no `rust-embed`/`include_dir`/`ServeDir`; it serves no PWA |
+| Build location | **must not be Hetzner** (Adrian, 2026-07-25). CI produces the linux binary; the box downloads it. |
+
+On 2026-07-25 a deploy was attempted before checking any of this: a Rust toolchain was installed on
+the production box and a release build started, against a box running 17 live pm2 services. Both
+were removed (~0.6G). Nothing was served and no live service was affected, but the check should
+have come first.
+
 ## Genuinely-absent spec items
 
 Verified still absent:
