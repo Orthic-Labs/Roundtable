@@ -41,7 +41,7 @@ test('E2E: the real compiled roundtable-node binary delivers a message to Codex 
   const addr = await hub.listen(0);
 
   const room = store.createRoom({ slug: 'e2e-rust', title: 'E2E Rust Node' });
-  const dbNode = store.registerNode({ name: 'mac', tokenHash: 'unused-by-this-hub' });
+  const dbNode = store.registerNode({ name: 'mac', tokenHash: Store.hashNodeToken('node-secret') });
   const seat = store.createSeat({
     roomId: room.id, nodeId: dbNode.id, alias: 'mac-codex', provider: 'codex', sessionRef: 'thread-none-yet',
   });

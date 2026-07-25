@@ -117,3 +117,31 @@ test('getDelivery carries the node_id needed to route an interrupt to the right 
   const { store, node, delivery } = fixture();
   assert.equal(store.getDelivery(delivery.id).node_id, node.id);
 });
+
+// ---- node authentication ---------------------------------------------------
+// The hub used to accept any connection quoting an existing node_id, without ever checking the
+// token it sent. A delivery carries a room transcript, so that was enough to read private
+// conversations knowing only a UUID.
+
+test('a node token is actually verified, and a wrong one is refused', () => {
+  const store = Store.open(':memory:');
+  const node = store.registerNode({ name: 'mac', tokenHash: Store.hashNodeToken('right-token') });
+  assert.ok(store.verifyNodeToken(node.id, 'right-token'), 'the correct token must be accepted');
+  assert.equal(store.verifyNodeToken(node.id, 'wrong-token'), null);
+  assert.equal(store.verifyNodeToken(node.id, ''), null);
+  assert.equal(store.verifyNodeToken(node.id, undefined), null);
+  assert.equal(store.verifyNodeToken(crypto.randomUUID(), 'right-token'), null, 'unknown node');
+});
+
+test('verifyNodeToken never leaks the stored hash', () => {
+  const store = Store.open(':memory:');
+  const node = store.registerNode({ name: 'mac', tokenHash: Store.hashNodeToken('t') });
+  assert.equal(store.verifyNodeToken(node.id, 't').token_hash, undefined);
+});
+
+test('a revoked node is refused even with the right token', () => {
+  const store = Store.open(':memory:');
+  const node = store.registerNode({ name: 'mac', tokenHash: Store.hashNodeToken('t') });
+  store.raw.prepare('UPDATE nodes SET revoked_at_ms = ? WHERE id = ?').run(Date.now(), node.id);
+  assert.equal(store.verifyNodeToken(node.id, 't'), null);
+});

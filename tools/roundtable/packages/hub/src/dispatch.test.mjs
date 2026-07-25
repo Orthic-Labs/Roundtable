@@ -19,13 +19,16 @@ import { createHub } from './server.mjs';
 import { Store } from './store.mjs';
 import { PROTOCOL_VERSION, NodeFrame } from './wire.mjs';
 
+/** The hub verifies this against the node's stored token_hash — it is not decorative. */
+const NODE_TOKEN = 'test-node-token';
+
 async function withHub(fn) {
   const store = Store.open(':memory:');
   const hub = createHub({ store, adminToken: 'tok', secure: false, allowedOrigins: [] });
   const addr = await hub.listen(0);
   const wsBase = `ws://127.0.0.1:${addr.port}`;
   const room = store.createRoom({ slug: 'r', title: 'R' });
-  const node = store.registerNode({ name: 'mac', tokenHash: 'h' });
+  const node = store.registerNode({ name: 'mac', tokenHash: Store.hashNodeToken(NODE_TOKEN) });
   const seat = store.createSeat({
     roomId: room.id, nodeId: node.id, alias: 'mac-claude', provider: 'claude', sessionRef: 's1',
   });
@@ -48,7 +51,7 @@ async function connectAsNode(wsBase, nodeId, { resumeCursor = 0 } = {}) {
   await once(client, 'open');
   client.send(nodeFrame(NodeFrame.HELLO, {
     hello: {
-      node_id: nodeId, token: 'unused-by-this-hub', hostname: 'mac', os: 'macos',
+      node_id: nodeId, token: NODE_TOKEN, hostname: 'mac', os: 'macos',
       version: '0.1.0', resume_cursor: resumeCursor,
     },
   }));

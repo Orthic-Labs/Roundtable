@@ -409,9 +409,13 @@ export function createHub({
         // HubCommand variant needs this same unwrap; MESSAGE_POST and DELIVERY_ACK below do too.
         // Verified against the real compiled binary's actual bytes on the wire — a hand-guessed
         // flat shape passed every JS-only test while being wrong.
-        const { node_id: nodeId, resume_cursor: resumeCursor } = frame.payload?.hello ?? {};
-        if (!nodeId || !store.getNode(nodeId)) {
-          conn.close(1008, 'unknown node_id');
+        const { node_id: nodeId, token, resume_cursor: resumeCursor } = frame.payload?.hello ?? {};
+        // The token IS checked. It previously was not: any connection quoting an existing node_id
+        // was accepted, which is enough to receive that node's deliveries (each carrying a room
+        // transcript) and to post as its seats. Revoked nodes are refused here too.
+        if (!nodeId || !store.verifyNodeToken(nodeId, token)) {
+          log.warn('node.auth_rejected', { node_id: nodeId ?? null });
+          conn.close(1008, 'unauthorized');
           return;
         }
         helloReceived = true;

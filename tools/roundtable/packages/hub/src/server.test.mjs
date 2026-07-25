@@ -180,7 +180,8 @@ test('E2E: a node connects over WebSocket and the hub tracks it after node.hello
     // (see server.mjs's attachWebSocket) — a bare WS upgrade with no node.hello is not "a node
     // connected" from the hub's point of view, so this test registers a real node and sends the
     // handshake the real roundtable-node binary sends, rather than asserting on a raw upgrade.
-    const node = hub.store.registerNode({ name: 'mac', tokenHash: 'h' });
+    const nodeToken = 'test-node-token';
+    const node = hub.store.registerNode({ name: 'mac', tokenHash: Store.hashNodeToken(nodeToken) });
     const client = new WebSocket(`${base.replace('http', 'ws')}/node/connect`);
     await once(client, 'open');
     client.send(JSON.stringify({
@@ -189,7 +190,7 @@ test('E2E: a node connects over WebSocket and the hub tracks it after node.hello
       // default externally-tagged representation nests its fields one level deeper.
       payload: {
         hello: {
-          node_id: node.id, token: 'unused-by-this-hub', hostname: 'mac', os: 'macos',
+          node_id: node.id, token: nodeToken, hostname: 'mac', os: 'macos',
           version: '0.1.0', resume_cursor: 0,
         },
       },

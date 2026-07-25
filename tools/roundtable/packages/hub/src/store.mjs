@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { hashSecretBytes, tokenMatches } from './auth.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const MIGRATION_PATH = resolve(
@@ -151,6 +152,30 @@ export class Store {
     return this.#db
       .prepare('SELECT id, name, created_at_ms, revoked_at_ms, last_seen_ms FROM nodes WHERE id = ?')
       .get(id) ?? null;
+  }
+
+  /**
+   * Authenticate a node's `node.hello`. Returns the node row on success, `null` on any failure.
+   *
+   * This exists because the hub previously accepted ANY connection whose `node_id` merely existed
+   * — the `token` the node sends was read off the wire and never checked, and a revoked node was
+   * still admitted. A delivery carries a room's transcript, so that was enough to read private
+   * conversations and post as any seat the node owns, knowing only a UUID.
+   *
+   * Comparison is constant-time over fixed-length digests, matching the admin-token path.
+   */
+  verifyNodeToken(id, token) {
+    const row = this.#db.prepare('SELECT * FROM nodes WHERE id = ?').get(id);
+    if (!row) return null;
+    if (row.revoked_at_ms) return null;
+    if (!tokenMatches(Buffer.from(row.token_hash, 'hex'), token)) return null;
+    const { token_hash: _omit, ...safe } = row;
+    return safe;
+  }
+
+  /** Hex sha256 of a node token, for `registerNode({ tokenHash })`. */
+  static hashNodeToken(token) {
+    return hashSecretBytes(token).toString('hex');
   }
 
   touchNode(id) {
