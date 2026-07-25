@@ -1,4 +1,4 @@
-# Roundtable — Handover (2026-07-25, updated after the first real end-to-end proof)
+# Roundtable — Handover (2026-07-26, updated after real agent content started relaying)
 
 Read this first in a cold session. `STATUS.md` is the detailed authoritative log; this is the
 orientation layer on top of it.
@@ -22,24 +22,27 @@ claims").
 **Single branch, everywhere.** `main` only, local and remote, no worktrees. Adrian's explicit
 instruction; don't create branches without asking.
 
-## Current state — everything is green, AND a real message reaches Codex and back
+## Current state — everything is green, AND a real message reaches Codex and comes back with real content
 
 ```
-cargo test --workspace --no-fail-fast                     → 66 passed, 0 failed
-node --test packages/hub/src/*.test.mjs (8 stable files)  → 72 passed, 0 failed
+cargo test --workspace --no-fail-fast                     → 67 passed, 0 failed
+node --test packages/hub/src/*.test.mjs (9 stable files)  → 73 passed, 0 failed
 node --test packages/hub/src/e2e-rust-node.test.mjs       → 1 passed, 0 failed
 ```
 
 **The actual milestone:** a message posted in a room reaches the real compiled
 `roundtable-node` binary over a real WebSocket, drives the real Codex fixture through a real
-turn, and the reply is persisted back as an `agent`-authored message. Not a mock at any layer.
-Getting there required finding and fixing five real, independent wire-protocol bugs — see
-STATUS.md's "Node↔Codex seat routing" section for the full list; the short version is that every
-`HubCommand`/`HubEvent` payload is nested one level deeper than any JS-only test assumed (Rust's
-serde default externally-tagged enum representation), `Message.actor_id` must be a real UUID even
-for humans, and the seat default state `'attached'` isn't a valid `SeatState` variant. **None of
-these surfaced until a real binary was driven against a real Codex process** — every JS-only and
-Rust-only test had been internally self-consistent with the same wrong assumption.
+turn, and the reply — the agent's actual output, not a status ping — is persisted back as an
+`agent`-authored message. Not a mock at any layer. Getting there required finding and fixing seven
+real, independent wire-protocol bugs on 2026-07-25 (every `HubCommand`/`HubEvent` payload nested
+one level deeper than any JS-only test assumed, `Message.actor_id` needing a real UUID even for
+humans, the seat default state `'attached'` not being a valid `SeatState` variant, a crash-on-
+disconnect bug, and silent frame drops that hid all of it) plus two more on 2026-07-26 (nested
+`Turn` object instead of flat `turnId`/`status`, and array-shaped `UserInput` instead of a bare
+string for every `input` param) — see STATUS.md's "Node↔Codex seat routing" section for the full
+list. **None of these surfaced until a real binary was driven against a real Codex process, or a
+real protocol schema was generated and diffed against** — every JS-only and Rust-only test had
+been internally self-consistent with the same wrong assumption.
 
 Both stacks are complete and working *independently*, and now also **together**:
 
@@ -55,12 +58,14 @@ Both stacks are complete and working *independently*, and now also **together**:
   `CreateThread`/`StartTurn`/`SteerTurn` based on what it already knows about that seat).
   `ApprovalResolve`/`SeatDetach` are still unhandled.
 
-**One important caveat:** the reply that lands is a synthetic status string
-(`"[roundtable-node] turn Completed (thread ...)"`), not the agent's real output.
-`CodexEvent::body` is deliberately empty — App Server's actual text-delta field shape isn't
-documented anywhere available here, and guessing it would repeat the exact mistake this whole
-investigation was about. The *transport and routing* are proven; *relaying real agent content*
-is the next real gap.
+**Real agent content now relays.** `item/completed` notifications where `item.type ==
+"agentMessage"` carry the agent's actual reply text in `item.text`; `notification_to_event` routes
+this into `CodexEvent::body`, and `main.rs::handle_codex_event` posts it as a `Chat`-kind message
+instead of the old synthetic status line. This is grounded in a real protocol schema — see below —
+not guessed. What's still genuinely missing: `item/agentMessage/delta` (live-streaming chunks) is
+intentionally not consumed (only the completed item's full text), and every other real
+`ThreadItem` variant (tool calls, file changes, reasoning, command execution) is dropped rather
+than surfaced as room content — it just doesn't match the `agentMessage` check.
 
 ## Decisions already made — don't re-litigate these
 
@@ -95,8 +100,9 @@ is the next real gap.
 - **Deployment itself.** `ops/ecosystem.config.cjs`, `ops/nginx-roundtable.conf`, `ops/backup.sh`
   are written and locally smoke-tested, but none has touched Hetzner. That's gated behind
   `DEPLOY TASK 11` per #4 above, plus Adrian's sudo for the nginx Dockerfile rebuild.
-- **Real agent content is not relayed** — the reply the node posts is a synthetic status string,
-  not Codex's actual output. See the caveat above; this is the real next step.
+- **Only `agentMessage` content relays** — `item/agentMessage/delta` (streaming) and every other
+  `ThreadItem` variant (tool calls, file changes, reasoning, command execution) are dropped, not
+  surfaced in the room. See the note above; this is the next real gap.
 - **`ApprovalResolve` and `SeatDetach`** still fall into `main.rs`'s catch-all.
 - **`.agent/okf/*.md`** is stale in both directions (predates most of today's work) — don't trust
   it, regenerate it.
@@ -131,11 +137,18 @@ new evidence; run this file alone or last in a batch to avoid it.
   way around. If you're ever tempted to "clean up" the envelope shape, remember the node is the
   fixed point.
 
+## Real protocol schema is now in the repo — use it, don't guess
+
+`fixtures/app-server/schema/` holds a real Codex App Server v2 protocol schema, generated via
+`codex app-server generate-json-schema --experimental --out <dir>` against a real, locally-
+installed `codex` CLI (Task 0 in the architecture doc, done for real). Read its README before
+touching `codex.rs` or `fake-codex.mjs` again — it documents exactly what was wrong before
+(flat `turnId`/`status`, bare-string `input`) and what the real shapes are. Regenerate it if
+`codex` is upgraded and you suspect drift; diff, don't assume.
+
 ## Suggested next step
 
-Either (a) decide the Rust hub's fate (delete vs keep as reference), or (b) make the reply carry
-real agent content instead of a synthetic status string — the one substantive gap left after
-today's end-to-end proof. That needs App Server's actual text-delta notification shape, which
-isn't in the fixture or the architecture doc; get it from a real `codex app-server` run (Task 0's
-`generate-json-schema --experimental` step in the architecture doc) rather than guessing, given
-how expensive guessing turned out to be for the rest of this protocol.
+Either (a) decide the Rust hub's fate (delete vs keep as reference), or (b) surface more real
+`ThreadItem` content — tool calls, file changes, reasoning — as room messages, using the same
+schema-grounded approach that closed the `agentMessage` gap. `ServerNotification.json` in the
+schema directory has the full tagged union of what's available.

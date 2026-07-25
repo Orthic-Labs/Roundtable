@@ -2,12 +2,53 @@
 
 All notable changes to this repo. Categories follow [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] — Node hub port + first real end-to-end proof, 2026-07-25
+## [Unreleased] — real agent content relaying, grounded in the real protocol schema, 2026-07-26
+
+Full detail in `STATUS.md`'s "Node↔Codex seat routing" section; narrative in `HANDOVER.md`.
+
+### Added
+
+- **`fixtures/app-server/schema/`** — the real Codex App Server v2 protocol schema, generated via
+  `codex app-server generate-json-schema --experimental --out <dir>` against a real, locally-
+  installed `codex` CLI (`/opt/homebrew/bin/codex`). This is the architecture doc's own Task 0
+  step, run for real instead of continuing to guess wire shapes. Includes a README documenting
+  exactly what it corrected relative to the existing code and fixture.
+
+### Fixed — two more real wire-protocol bugs, found by generating the schema instead of guessing
+
+- `turn/started`/`turn/completed` carry a nested `{threadId, turn: {id, status}}`, not the flat
+  `turnId`/`status` `codex.rs`'s `notification_to_event` was reading. Real `TurnStatus` values are
+  `completed | interrupted | failed | inProgress`.
+- Every `input` param (`thread/start`, `turn/start`, `turn/steer`) is an array of `UserInput`
+  (tagged union), not a bare string. Fixed via a `text_input()` helper at the wire boundary
+  (`codex.rs`); `CodexCommand`'s own `input: String` fields are unaffected.
+
+### Closed — the "next real gap" flagged the previous day
+
+- **Real agent content now relays.** `item/completed` notifications where
+  `item.type == "agentMessage"` carry the agent's actual reply text in a flat `item.text` — now
+  routed into `CodexEvent::body` and posted by `main.rs::handle_codex_event` as a `Chat`-kind
+  message, replacing the old always-synthetic status line. `item/agentMessage/delta`
+  (live-streaming chunks) is intentionally still not consumed; other real `ThreadItem` variants
+  (tool calls, file changes, reasoning, command execution) still aren't surfaced as room content.
+- `fixtures/app-server/fake-codex.mjs` rewritten to emit the real notification sequence
+  (`turn/started` -> `item/completed` -> `turn/completed`) instead of its old simplified shapes.
+- `e2e-rust-node.test.mjs` now asserts the literal reply text (`"echo: say hello"`), not just a
+  regex match against a synthetic status string.
+
+### Verified
+
+- `cargo test --workspace`: 67/67 (was 66; +1 net from replacing a fixture-quirk-dependent test
+  with two direct unit tests of `notification_to_event`'s drop paths).
+- The 9 stable `packages/hub` test files together: 73/73.
+- `e2e-rust-node.test.mjs`: 1/1, now asserting real relayed content.
+
+### Earlier — 2026-07-25 — Node hub port + first real end-to-end proof
 
 Full narrative in `HANDOVER.md`; measured detail in `STATUS.md`. This entry is the chronological
 summary of one day's work, in order.
 
-### Decided
+#### Decided
 
 - **Port the hub from Rust to Node/TypeScript; keep `roundtable-node` in Rust.** The hub is
   I/O-bound, the deploy target (Hetzner) runs Node already, and there is no viable Rust deploy
@@ -19,7 +60,7 @@ summary of one day's work, in order.
   trust boundary as the memory dashboard, and `Path=/roundtable` does not fix that (cookie path
   matching is by request path, not page path).
 
-### Added
+#### Added
 
 - **`packages/hub`** — a complete Node.js port of the hub, zero npm dependencies
   (`node:sqlite`, `node:http`, `node:crypto`, a hand-rolled RFC 6455 WebSocket server — pnpm is
@@ -41,7 +82,7 @@ summary of one day's work, in order.
 - **`tools/agent-room/`** — the multi-party agent+human broker, absorbed from a branch that
   predated this repo's proper git connection.
 
-### Fixed — five real wire-protocol bugs, found only by driving a real binary against a real Codex process
+#### Fixed — five real wire-protocol bugs, found only by driving a real binary against a real Codex process
 
 No amount of JS-only or Rust-only testing caught any of these: each side's tests were internally
 self-consistent with the same wrong shared assumption.
@@ -67,7 +108,7 @@ Plus two bugs found along the way, both fixed permanently rather than left as sc
   process, not just that connection — an unhandled `EventEmitter` `'error'` event. Fixed with a
   no-op listener in `attachWebSocket`.
 
-### Verified
+#### Verified
 
 - `cargo test --workspace`: 66/66 (was 62 at the start of the day).
 - The 8 stable `packages/hub` test files together: 72/72.
@@ -75,7 +116,7 @@ Plus two bugs found along the way, both fixed permanently rather than left as sc
   the real Codex fixture — a message posted in a room reaches Codex through a real turn and the
   reply is persisted back as an `agent`-authored message. 1/1 pass.
 
-### Known limitation
+#### Known limitation (closed 2026-07-26 — see the entry above)
 
 The reply that lands is a synthetic status string (`"[roundtable-node] turn Completed..."`), not
 Codex's real output. `CodexEvent::body` stays empty because App Server's actual text-delta field
@@ -83,16 +124,16 @@ shape isn't documented anywhere available here, and guessing it would repeat the
 this day's investigation was about. The transport and routing are proven; relaying real agent
 content is the next gap.
 
-### Known, unresolved (not a protocol defect)
+#### Known, unresolved (not a protocol defect)
 
 `dispatch.test.mjs`'s reconnect test reproducibly hangs `node --test` when run anywhere but first
 in a batch. Confirmed via extensive isolation to be a test-runner/environment interaction on this
 machine — every test passes alone, the real e2e test is unaffected. Run this file alone or last
 in a batch until diagnosed.
 
-### Earlier the same day — repo reconciliation corrections
+#### Earlier the same day — repo reconciliation corrections
 
-### Fixed
+##### Fixed
 
 - **Status claims reconciled against `main`.** The 0.1.0 entry below describes work as it existed
   in the agent worktrees that produced each slice. The hub, store, and PWA slices were never

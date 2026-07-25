@@ -9,11 +9,17 @@
 //! `turn/interrupt`) are taken from `2026-07-22-roundtable-cross-device-architecture.md` and
 //! from the fixture above — not invented here.
 //!
-//! Still NOT implemented, and deliberately not pretended: agent text-delta notifications
-//! (App Server's actual field shape for streamed message content isn't in the fixture or the
-//! architecture doc, so `CodexEvent::body` stays empty rather than guessing a shape), approval
-//! requests, and `tool/requestUserInput`. Only turn-lifecycle notifications
-//! (`turn/started`/`turn/completed`/`turn/interrupted`/`turn/failed`) are routed to a seat.
+//! Wire shapes for `input` params and turn-lifecycle notifications are grounded in
+//! `fixtures/app-server/schema/` — a real schema generated from a real, locally-installed
+//! `codex` CLI (`codex app-server generate-json-schema --experimental`), not guessed. See that
+//! directory's README for what it corrected relative to `fake-codex.mjs` and this file's
+//! earlier assumptions (flat `turnId`/`status` fields, bare-string `input`).
+//!
+//! Still NOT implemented, and deliberately not pretended: approval requests and
+//! `tool/requestUserInput`. Routed notifications: `turn/started`, `turn/completed`,
+//! `turn/interrupted`, `turn/failed` (turn lifecycle), and `item/completed` where
+//! `item.type == "agentMessage"` (real agent reply text, via `CodexEvent::body`).
+//! `item/agentMessage/delta` (live-streaming chunks) is intentionally not consumed here.
 //!
 //! Persists (seat_id, thread_id, cwd, model, active_turn_id) in `seats`, in memory only —
 //! nothing here yet persists to `NodeState`.
@@ -50,8 +56,9 @@ pub struct CodexEvent {
     pub thread_id: String,
     pub turn_id: Option<String>,
     pub status: CodexTurnStatus,
-    /// App Server's real text-delta shape isn't documented here yet — stays empty rather than
-    /// inventing a field name. See the module doc.
+    /// The real agent reply text, from an `item/completed` notification's `item.text` (see the
+    /// module doc). Empty for every other routed event (turn/started, turn/completed, etc.) —
+    /// those carry only lifecycle status, not content.
     pub body: String,
     pub kind: String,
     pub provider_request_id: Option<String>,
@@ -72,6 +79,14 @@ pub enum CodexCommand {
     SteerTurn { thread_id: String, expected_turn_id: String, input: String },
     InterruptTurn { thread_id: String },
     Shutdown,
+}
+
+/// Wraps a plain string as the real `UserInput` array shape App Server's `input` params require
+/// (`TurnStartParams.input: UserInput[]`, tagged union with a `text` variant — see
+/// `fixtures/app-server/schema/README.md`). `CodexCommand`'s own `input: String` fields stay
+/// plain strings; this is the wire-boundary conversion, done once, here.
+fn text_input(text: &str) -> Value {
+    serde_json::json!([{ "type": "text", "text": text }])
 }
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
@@ -222,35 +237,62 @@ impl CodexAdapter {
         });
     }
 
-    /// Only turn-lifecycle notifications are routed; anything else returns `None` and is dropped.
-    /// Requires a `threadId` in `params` that matches a seat already known to `seats` — a
-    /// notification for an unrecognized thread has nowhere to go and is not an error, just not
-    /// yet routable (this happens for `turn/start`'s own completion notification in the fixture,
-    /// which omits `threadId` entirely; see the fixture's `turn/start` handler).
+    /// Routes turn-lifecycle and agent-content notifications; anything else returns `None` and
+    /// is dropped. Requires a `threadId` in `params` that matches a seat already known to
+    /// `seats` — a notification for an unrecognized thread has nowhere to go and is not an
+    /// error, just not yet routable (this happens for `turn/start`'s own completion
+    /// notification in the fixture, which omits `threadId` entirely).
+    ///
+    /// Shapes below are grounded in `fixtures/app-server/schema/` — the REAL protocol, generated
+    /// from a real `codex app-server generate-json-schema` run, not the simplified fixture. Two
+    /// things the fixture gets wrong that this function must not repeat:
+    /// - `turn/started`/`turn/completed` carry `{threadId, turn: Turn}` — turn_id and status
+    ///   live inside the nested `turn` object (`turn.id`, `turn.status`), never at the top level.
+    ///   `TurnStatus` is exactly `completed | interrupted | failed | inProgress`.
+    /// - The real agent reply text is `item/completed` with `item.type == "agentMessage"` and a
+    ///   flat `item.text` — not something accumulated from delta chunks. `item/agentMessage/delta`
+    ///   exists for live-streaming UI and is intentionally NOT handled here; the completed item
+    ///   already carries the full text once, which is what a delivery reply needs.
     async fn notification_to_event(
         method: &str,
         params: &Value,
         seats: &Arc<Mutex<HashMap<Uuid, SeatState>>>,
     ) -> Option<CodexEvent> {
-        let status = match method {
-            "turn/started" => CodexTurnStatus::Running,
-            "turn/completed" => match params.get("status").and_then(Value::as_str) {
-                Some("failed") => CodexTurnStatus::Failed,
-                Some("waiting_approval") => CodexTurnStatus::WaitingApproval,
-                Some("cancelled") => CodexTurnStatus::Cancelled,
-                _ => CodexTurnStatus::Completed,
-            },
-            "turn/interrupted" => CodexTurnStatus::Cancelled,
-            "turn/failed" => CodexTurnStatus::Failed,
+        let (thread_id, turn_id, status, body) = match method {
+            "turn/started" => {
+                let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
+                let turn = params.get("turn")?;
+                let turn_id = turn.get("id").and_then(Value::as_str).map(str::to_string);
+                (thread_id, turn_id, CodexTurnStatus::Running, String::new())
+            }
+            "turn/completed" => {
+                let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
+                let turn = params.get("turn")?;
+                let turn_id = turn.get("id").and_then(Value::as_str).map(str::to_string);
+                let status = match turn.get("status").and_then(Value::as_str) {
+                    Some("failed") => CodexTurnStatus::Failed,
+                    Some("interrupted") => CodexTurnStatus::Cancelled,
+                    Some("inProgress") => CodexTurnStatus::Running,
+                    _ => CodexTurnStatus::Completed, // "completed", or an unrecognized future value
+                };
+                (thread_id, turn_id, status, String::new())
+            }
+            "item/completed" => {
+                let item = params.get("item")?;
+                if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
+                    return None; // tool calls, file changes, reasoning, etc. — not handled here
+                }
+                let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
+                let turn_id = params.get("turnId").and_then(Value::as_str).map(str::to_string);
+                let text = item.get("text").and_then(Value::as_str)?.to_string();
+                (thread_id, turn_id, CodexTurnStatus::Running, text)
+            }
             _ => return None,
         };
-        let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
-        let turn_id = params.get("turnId").and_then(Value::as_str).map(str::to_string);
         let seat_id = seats.lock().await.values()
             .find(|s| s.thread_id == thread_id).map(|s| s.seat_id)?;
         Some(CodexEvent {
-            seat_id, thread_id, turn_id, status,
-            body: String::new(),
+            seat_id, thread_id, turn_id, status, body,
             kind: method.to_string(),
             provider_request_id: None,
         })
@@ -308,7 +350,9 @@ impl CodexAdapter {
             )),
             CodexCommand::ListThreads => self.call("thread/list", serde_json::json!({})).await,
             CodexCommand::CreateThread { input, cwd } => {
-                let result = self.call("thread/start", serde_json::json!({"input": input, "cwd": cwd})).await?;
+                let result = self.call(
+                    "thread/start", serde_json::json!({"input": text_input(&input), "cwd": cwd}),
+                ).await?;
                 if let Some(thread_id) = result.get("threadId").and_then(Value::as_str) {
                     let mut seats = self.seats.lock().await;
                     seats.insert(seat_id, SeatState {
@@ -325,7 +369,7 @@ impl CodexAdapter {
             }
             CodexCommand::StartTurn { thread_id, input } => {
                 let result = self.call(
-                    "turn/start", serde_json::json!({"threadId": thread_id, "input": input}),
+                    "turn/start", serde_json::json!({"threadId": thread_id, "input": text_input(&input)}),
                 ).await?;
                 self.upsert_seat_thread(seat_id, &thread_id).await;
                 if let Some(turn_id) = result.get("turnId").and_then(Value::as_str) {
@@ -335,7 +379,7 @@ impl CodexAdapter {
             }
             CodexCommand::SteerTurn { thread_id, expected_turn_id, input } => {
                 self.call("turn/steer", serde_json::json!({
-                    "threadId": thread_id, "expectedTurnId": expected_turn_id, "input": input,
+                    "threadId": thread_id, "expectedTurnId": expected_turn_id, "input": text_input(&input),
                 })).await
             }
             CodexCommand::InterruptTurn { thread_id } => {
@@ -456,7 +500,8 @@ mod tests {
         // happens after `call()` resolves. notification_to_event() therefore finds no seat
         // matching this thread_id yet and correctly drops it (there is genuinely nowhere to
         // route it — the seat_id<->thread_id mapping does not exist until the response arrives).
-        // Only turn/completed, sent ~10ms later, lands after the mapping exists.
+        // Only the pair sent ~10ms later — item/completed then turn/completed — lands after the
+        // mapping exists.
         //
         // This is a real limitation of CreateThread specifically: the very first notification
         // for a brand-new thread can race ahead of the response that makes it routable. Fixing it
@@ -468,8 +513,15 @@ mod tests {
             .expect("must not time out").expect("channel must not close");
         assert_eq!(first.seat_id, seat_id);
         assert_eq!(first.thread_id, thread_id);
-        assert_eq!(first.kind, "turn/completed", "turn/started is lost to the race described above");
-        assert_eq!(first.status, CodexTurnStatus::Completed);
+        assert_eq!(first.kind, "item/completed", "turn/started is lost to the race described above");
+        assert_eq!(first.body, "echo: hello", "item/completed must carry the real agentMessage text");
+
+        let second = timeout(Duration::from_secs(2), events.recv()).await
+            .expect("must not time out").expect("channel must not close");
+        assert_eq!(second.seat_id, seat_id);
+        assert_eq!(second.thread_id, thread_id);
+        assert_eq!(second.kind, "turn/completed");
+        assert_eq!(second.status, CodexTurnStatus::Completed);
 
         adapter.shutdown().await.unwrap();
     }
@@ -492,27 +544,30 @@ mod tests {
         adapter.shutdown().await.unwrap();
     }
 
-    /// turn/start's own completion notification in the fixture omits `threadId` entirely — a
-    /// real gap in the fixture's fidelity, documented rather than worked around, since a
-    /// notification with no threadId genuinely cannot be routed to a seat.
+    /// Direct unit coverage of the drop path in `notification_to_event`: a `turn/completed`
+    /// missing `threadId` entirely genuinely cannot be routed to any seat and must return `None`,
+    /// not panic or guess. (Previously exercised by relying on a fixture gap where turn/start's
+    /// own completion omitted threadId — fixed in fake-codex.mjs once the real, schema-grounded
+    /// shape was known, so this is now a direct call against crafted params instead.)
     #[tokio::test]
     async fn a_notification_missing_thread_id_is_dropped_not_misrouted() {
-        let mut adapter = fixture_adapter();
-        let mut events = adapter.subscribe().await;
-        adapter.connect().await.unwrap();
+        let seats: Arc<Mutex<HashMap<Uuid, SeatState>>> = Arc::new(Mutex::new(HashMap::new()));
+        let params = serde_json::json!({ "turn": { "id": "turn-1", "status": "completed" } });
+        let outcome = CodexAdapter::notification_to_event("turn/completed", &params, &seats).await;
+        assert!(outcome.is_none(), "a threadId-less notification must not produce a CodexEvent");
+    }
 
-        let seat_id = Uuid::now_v7();
-        adapter.execute(
-            seat_id,
-            CodexCommand::StartTurn { thread_id: "thr-preexisting".into(), input: "hi".into() },
-        ).await.expect("turn/start succeeds against the fixture even for an unknown thread_id");
-
-        // The fixture's turn/start handler emits a turn/completed with only {turnId, status} —
-        // no threadId — so notification_to_event must return None for it and nothing should
-        // arrive on the channel within a short window.
-        let outcome = timeout(Duration::from_millis(200), events.recv()).await;
-        assert!(outcome.is_err(), "a threadId-less notification must not produce a CodexEvent");
-
-        adapter.shutdown().await.unwrap();
+    /// Direct unit coverage of the `item/completed` path: only `item.type == "agentMessage"` is
+    /// routed (tool calls, file changes, reasoning, etc. are real `ThreadItem` variants that this
+    /// adapter deliberately does not surface as chat content — see the module doc comment).
+    #[tokio::test]
+    async fn item_completed_with_a_non_agent_message_type_is_dropped() {
+        let seats: Arc<Mutex<HashMap<Uuid, SeatState>>> = Arc::new(Mutex::new(HashMap::new()));
+        let params = serde_json::json!({
+            "threadId": "thr-1", "turnId": "turn-1",
+            "item": { "id": "item-1", "type": "commandExecution", "command": "ls" },
+        });
+        let outcome = CodexAdapter::notification_to_event("item/completed", &params, &seats).await;
+        assert!(outcome.is_none(), "a non-agentMessage item must not produce a CodexEvent");
     }
 }

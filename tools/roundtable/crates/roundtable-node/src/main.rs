@@ -170,14 +170,11 @@ async fn dispatch_to_codex(seat_id: uuid::Uuid, input: String, codex: &Arc<Codex
     }
 }
 
-/// Posts a status message back into the room for any turn-lifecycle event with a seat_id — that
-/// is every event `notification_to_event` in codex.rs ever emits (see its doc comment).
-///
-/// The body is NOT the agent's real output: `CodexEvent::body` is always empty today, because
-/// App Server's actual text-delta shape isn't available (see codex.rs's module doc). This proves
-/// the round trip — hub delivery reaches Codex, Codex's own event reaches back to the hub — without
-/// pretending to relay content that was never extracted. Do not read a body from this and treat
-/// it as agent output.
+/// Posts a message back into the room for any routed CodexEvent with a seat_id — every event
+/// `notification_to_event` in codex.rs emits (see its doc comment). When the event carries real
+/// agent content (`item/completed`'s agentMessage text), that's what gets posted, as a `Chat`
+/// message. Otherwise (turn/started, turn/completed, etc.) a synthetic status line is posted
+/// instead, so the turn's lifecycle is still visible in the room even between agent replies.
 async fn handle_codex_event(
     event: CodexEvent,
     client: &HubClient,
@@ -192,19 +189,28 @@ async fn handle_codex_event(
         tracing::warn!(seat_id = %event.seat_id, "codex event for a seat with no known room; dropping");
         return;
     };
-    let synthetic_body = format!(
-        "[roundtable-node] turn {status:?} (thread {thread})",
-        status = event.status, thread = event.thread_id,
-    );
+    // `item/completed` (agentMessage) carries real reply text in `event.body`; every other
+    // routed event (turn/started, turn/completed, turn/interrupted, turn/failed) leaves `body`
+    // empty and gets a synthetic status line instead — see codex.rs::notification_to_event.
+    let (body, kind) = if !event.body.is_empty() {
+        (event.body.clone(), MessageKind::Chat)
+    } else {
+        let synthetic_body = format!(
+            "[roundtable-node] turn {status:?} (thread {thread})",
+            status = event.status, thread = event.thread_id,
+        );
+        let kind = match event.status {
+            CodexTurnStatus::Failed | CodexTurnStatus::WaitingApproval => MessageKind::System,
+            _ => MessageKind::Progress,
+        };
+        (synthetic_body, kind)
+    };
     let (response, _rx) = tokio::sync::oneshot::channel();
     client.send(ClientCommand::PostMessage {
         seat_id: event.seat_id,
         room_id,
-        kind: match event.status {
-            CodexTurnStatus::Failed | CodexTurnStatus::WaitingApproval => MessageKind::System,
-            _ => MessageKind::Progress,
-        },
-        body: synthetic_body,
+        kind,
+        body,
         reply_to: None,
         response,
     }).await;
