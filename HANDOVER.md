@@ -104,7 +104,12 @@ Both stacks are complete and working *independently*:
 
 ## Suggested next step
 
-Either (a) decide the Rust hub's fate (delete vs keep as reference), or (b) start proving an
-actual end-to-end delivery — a message posted in a room reaching a real Codex or Claude session
-through the node and a reply coming back. (b) is probably the more valuable next milestone; it's
-the thing that turns "the transport works" into "the product works."
+Either (a) decide the Rust hub's fate (delete vs keep as reference), or (b) close the
+Node↔Codex seat-routing gap — **now precisely measured in STATUS.md, not just named.** In short:
+`main.rs`'s event loop only handles 2 of 5 `HubEvent` variants (`HelloAccepted`, `Ping`) — a
+delivered message currently falls into a catch-all and goes nowhere. `CodexAdapter` sends exactly
+two JSON-RPC frames (`initialize`/`initialized`) and never reads a response to either; the
+`CodexCommand` enum (`StartTurn` etc.) has a passing serialization test but nothing that actually
+sends one. STATUS.md's "Node↔Codex seat routing" section lists the four concrete steps in order.
+(b) is the one that turns "the transport works" into "the product works" — do that measurement
+first before attempting it, so the next session doesn't have to re-derive it.
