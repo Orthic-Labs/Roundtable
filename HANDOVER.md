@@ -33,8 +33,8 @@ Proven on 2026-07-26: posted "Say exactly: THIRD" into the room, read `THIRD` ba
 production database as an agent chat message. Real binary, real hub, real Codex, no fixtures.
 
 ```
-cargo test --workspace              → 71 passed, 0 failed
-node --test (per file / small batch) → 100 passed, 0 failed
+cargo test --workspace              → 73 passed, 0 failed
+node --test src/*.test.mjs          → 100 passed, 0 failed  (retry if it wedges; see below)
 ```
 
 ## Deployment gotchas — all four cost real time, none are obvious
@@ -138,16 +138,18 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
    asked for) — verify before assuming it's needed for anything; the live site runs from
    `~/sites/rightsites/coderight`, untouched.
 
-## The test-runner hang — root-caused, largely fixed, not fully
+## The test-runner hang — mostly fixed, not fully
 
-The old advice ("run dispatch.test.mjs first, it's environmental") was wrong and is retired. It was
-two real bugs: a hub that could not shut down (`server.close()` waits for WebSockets that never
-close — SIGTERM hung the same way in production) and a frame race in the test helper.
+The old advice ("run dispatch.test.mjs first, it's environmental") was wrong and is retired. Four
+real leaks have been found and fixed, one of them a production defect: the hub could not shut down
+(`server.close()` waits on WebSockets that never close, so SIGTERM stalled too), `WsConnection` had
+no `destroy()`, `close()` only knew about handshaken connections, and `dispatch.test.mjs` had a
+frame race that lost same-tick frames.
 
-Honest status: `dispatch.test.mjs` now passes 11/11 and exits cleanly, where only 3 tests ever ran
-before. Small batches pass. **The full 12-file run is still flaky** — it completed 100/100 once,
-then hung at ~42 on later runs, always AFTER the tests report, so it is a lingering handle rather
-than a stuck test. Not root-caused. Run files individually or in small batches.
+Still open: `replay.test.mjs` wedges at process exit roughly 1 run in 4, alone. Every assertion
+passes first — the hang is purely the process not exiting, so it costs time, not correctness.
+Measured from inside a hanging run, the child holds a `TCPServerWrap` and two `TCPSocketWrap`s: a
+hub server that never finished closing. Retry the run, or run per-file.
 
 ## Known gotchas (already paid for once — don't rediscover)
 

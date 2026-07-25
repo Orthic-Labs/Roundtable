@@ -193,6 +193,20 @@ export class WsConnection extends EventEmitter {
     this.#finish(code, reason);
   }
 
+  /**
+   * Tear the socket down immediately, without waiting for a closing handshake.
+   *
+   * `close()` is the polite path: it sends a CLOSE frame and calls `end()`, then waits for the
+   * peer. A peer that never answers leaves the socket open — and because an upgraded socket is
+   * detached from the HTTP server, `server.closeAllConnections()` does NOT reach it and
+   * `server.close()` waits on it forever. That is what left a listening server and two live
+   * sockets behind after every test in a file had passed, hanging `node --test`.
+   */
+  destroy() {
+    this.#socket.destroy();
+    this.#finish(1006, 'destroyed');
+  }
+
   #write(buf) {
     if (this.#socket.destroyed || this.#socket.writableEnded) return;
     this.#socket.write(buf);

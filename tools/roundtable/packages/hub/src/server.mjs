@@ -350,7 +350,16 @@ export function createHub({
     }
   });
 
+  // EVERY upgraded connection, not just the handshaken node ones. `nodeConnections` holds only
+  // connections that completed `node.hello`; a connection that upgraded and never handshook, or
+  // one that was superseded and removed from that set, is invisible to it — and an upgraded
+  // socket is detached from the HTTP server, so `closeAllConnections()` cannot reach it either.
+  // `close()` would then wait on it forever. This set is what makes shutdown actually terminate.
+  const allConnections = new Set();
+
   attachWebSocket(server, (conn, req) => {
+    allConnections.add(conn);
+    conn.on('close', () => allConnections.delete(conn));
     // WsConnection re-emits the underlying socket's 'error' (see ws.mjs). Node's EventEmitter
     // throws if 'error' is emitted with no listener attached — an abrupt disconnect (ECONNRESET
     // from a killed process, a network blip) would otherwise crash this entire process and take
@@ -432,7 +441,9 @@ export function createHub({
           if (existing !== conn && existing.meta?.nodeId === nodeId) {
             nodeConnections.delete(existing);
             log.info('node.superseded', { node_id: nodeId });
-            try { existing.close(1000, 'superseded by a newer connection'); } catch { /* already gone */ }
+            // destroy, not close: the superseded peer is by definition not answering (that is why
+            // it was superseded), so waiting for a closing handshake leaves the socket open.
+            try { existing.destroy(); } catch { /* already gone */ }
           }
         }
         nodeConnections.add(conn);
@@ -640,9 +651,13 @@ export function createHub({
      * actually means here.
      */
     close: () => new Promise((resolve) => {
-      for (const c of nodeConnections) {
-        try { c.close(1001, 'shutdown'); } catch { /* already gone */ }
+      // destroy(), not close(): an upgraded WebSocket socket is detached from the HTTP server, so
+      // `closeAllConnections()` never reaches it, and a peer that does not complete the closing
+      // handshake leaves `server.close()` waiting forever.
+      for (const c of allConnections) {
+        try { c.destroy(); } catch { /* already gone */ }
       }
+      allConnections.clear();
       nodeConnections.clear();
       server.close(resolve);
       server.closeAllConnections();

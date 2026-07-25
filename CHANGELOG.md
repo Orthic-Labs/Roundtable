@@ -76,10 +76,16 @@ it environmental, and told readers to run it alone. Wrong on both counts:
   `once()`; on reconnect the hub sends both in the same tick, so the second was lost and the test
   waited forever for a message already delivered.
 
-`dispatch.test.mjs` now passes all 11 of its tests and exits cleanly, where only its first 3 ever
-ran. Small batches pass. **The full 12-file run remains flaky** — it completed 100/100 once, then
-hung at ~42 on later runs, always after the tests report (a lingering handle, not a stuck test).
-Not root-caused; run files individually or in small batches.
+Four real leaks fixed in total: the hub could not shut down (a production defect — SIGTERM stalled
+the same way), `WsConnection` had no `destroy()`, `close()` tracked only handshaken connections so
+superseded and pre-handshake sockets were invisible to it, and `dispatch.test.mjs` lost same-tick
+frames to an `once()` race. That file went from 3 passing tests to all 11.
+
+**Not fully solved:** `replay.test.mjs` still wedges at process exit roughly 1 run in 4, alone,
+holding a `TCPServerWrap` and two sockets (measured with `process.getActiveResourcesInfo()`). Every
+assertion passes first, so it costs CI time rather than correctness. An attempted `server.unref()`
+fix was reverted — it made the flakiness worse and resolved `close()` before the server had
+actually closed.
 
 ### Changed
 

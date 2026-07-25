@@ -21,10 +21,9 @@ the agent's real reply; a message to a Claude seat reaches a connected channel o
 0600 unix socket and its reply posts back. Verified live on 2026-07-26 — `mac-codex` and
 `mac-claude` answering in the same room, read back out of the production database.
 
-**71 cargo tests, 0 failures. 100 Node hub tests, 0 failures** when run per-file or in small
-batches. `dispatch.test.mjs` now passes all 11 of its tests and exits cleanly — previously only its
-first 3 ever ran. The full 12-file single-command run is still flaky; see "The test-runner hang"
-below for exactly what is and is not fixed.
+**73 cargo tests, 0 failures. 100 Node hub tests, 0 failures.** The full 12-file run now often
+completes in one pass, but `replay.test.mjs` still wedges at process exit roughly 1 run in 4 — see
+"The test-runner hang" for the four real leaks that were fixed and the one that was not.
 
 **`https://roundtable.spoares.com` is live** — nginx vhost built and serving, the PWA loads, and
 the Mac node connects over `wss://` with no tunnel. Nothing is outstanding on deployment.
@@ -92,33 +91,43 @@ And three more found by deploying rather than by testing:
    marked `sent`, never received, no error. A completing hello now supersedes any earlier
    connection for that node.
 
-## The test-runner hang — root-caused and largely fixed, NOT fully
+## The test-runner hang — four real leaks fixed, residual flakiness NOT solved
 
-Two real defects were found and fixed (this file previously called the whole thing environmental,
-which was wrong):
+Long treated in this repo as a machine/environment quirk. It is not: every cause found so far has
+been a real defect, and one of them was a production defect.
 
-- **The hub could not shut down.** `close()` sent WebSocket close frames and called
-  `server.close()`, which stops accepting and then WAITS for every existing connection to end — and
-  a WebSocket holds its socket open by design. A production defect too: SIGTERM hung identically.
-  Fixed with `closeAllConnections()`.
-- **A race in `dispatch.test.mjs`'s helper.** It awaited `hello.accepted`, then awaited the next
-  frame with a fresh `once()`; on reconnect the hub sends both in the same tick, so the second was
-  lost and the test waited forever for a message already delivered. The helper now collects frames
-  from socket open and exposes `waitFor(type)`.
+**Fixed:**
 
-**Measured result — stated precisely, because an earlier draft of this file overclaimed it:**
+1. **The hub could not shut down.** `close()` sent WebSocket close frames and called
+   `server.close()`, which waits for every existing connection to end — and a WebSocket holds its
+   socket open by design. SIGTERM stalled identically in production. Now destroys sockets.
+2. **`WsConnection` had no `destroy()`.** Only a polite `close()` that waits for the peer's
+   closing handshake. An upgraded socket is detached from the HTTP server, so
+   `closeAllConnections()` cannot reach it either — a peer that never answers pinned the process.
+3. **`close()` only knew about handshaken nodes.** A connection that upgraded but never sent
+   `node.hello`, or one that was superseded and removed from `nodeConnections`, was tracked
+   nowhere. Now every upgraded connection is tracked in `allConnections` and destroyed on close.
+   Supersede also destroys rather than politely closing — a superseded peer is by definition not
+   answering.
+4. **A frame race in `dispatch.test.mjs`.** It awaited `hello.accepted`, then awaited the next
+   frame with a fresh `once()`. On reconnect the hub sends both in the same tick, so the second
+   was lost and the test waited forever for a message already delivered. The helper now collects
+   frames from socket open and exposes `waitFor(type)`. This file went from 3 passing tests to
+   all 11.
 
-- `dispatch.test.mjs` alone: **11/11, exits cleanly.** Previously only its first 3 tests ever ran.
-  That is a genuine fix to the specific problem this repo had documented.
-- Small batches (5 files, 43 tests) pass and exit cleanly.
-- **The full 12-file suite is still flaky.** It completed 100/100 once, then hung on later runs at
-  ~42-43 tests. The hang happens AFTER tests report, so it is a lingering handle keeping the
-  process alive, not a stuck test. `e2e-rust-node.test.mjs` is implicated (it spawns a real binary;
-  removing it made an 11-file batch pass once), but that is not conclusive — the 11-file batch has
-  also hung. Not root-caused.
+**Not solved.** `replay.test.mjs` still hangs roughly 1 run in 4, *alone*, and the full suite
+inherits it. Measured with `process.getActiveResourcesInfo()` from inside a hanging run: the child
+is left holding `TCPServerWrap: 1` and `TCPSocketWrap: 2` — a hub server that never finished
+closing. Every assertion in the file passes first; the hang is purely at process exit, so it costs
+CI time, not correctness.
 
-**Practical guidance:** run files in small batches, or individually. Every file passes on its own.
-Do not reinstate the old "run dispatch.test.mjs first" advice — that diagnosis was wrong.
+One attempted fix was reverted rather than kept: `server.unref()` plus a bounded `setTimeout`
+resolve made it *worse* (3 hangs in 8) and resolved `close()` before the server had actually
+closed, which is a semantics regression.
+
+**Practical guidance:** run per-file or in small batches. `replay.test.mjs` is the one to retry if
+a run wedges. Do not reinstate the old "run dispatch.test.mjs first" advice — that diagnosis was
+wrong.
 
 ## Decisions
 

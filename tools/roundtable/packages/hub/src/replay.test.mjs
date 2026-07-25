@@ -36,6 +36,22 @@ function fixture() {
   return { store, hub, room, token, node, seat };
 }
 
+/**
+ * Close a client socket and WAIT for it to actually close.
+ *
+ * `close()` only starts a closing handshake. Returning before it finishes races `hub.close()`,
+ * and the half-closed client socket keeps the event loop alive after every test has passed —
+ * which hangs `node --test` with nothing left to report. Confirmed with
+ * process.getActiveResourcesInfo(): this file was the one leaving a TCPServerWrap and two
+ * TCPSocketWraps behind.
+ */
+async function closeClient(ws) {
+  if (ws.readyState === WebSocket.CLOSED) return;
+  const closed = once(ws, 'close');
+  ws.close();
+  await Promise.race([closed, new Promise((r) => setTimeout(r, 1000))]);
+}
+
 /** Reconnect from cursor 0 and collect every frame the hub replays. */
 async function replayedFrames(port, nodeId, token) {
   const conn = new WebSocket(`ws://127.0.0.1:${port}/node/connect`);
@@ -45,7 +61,7 @@ async function replayedFrames(port, nodeId, token) {
   conn.addEventListener('message', (e) => frames.push(JSON.parse(e.data.toString())));
   conn.send(hello(nodeId, token));
   await new Promise((r) => setTimeout(r, 200));
-  conn.close();
+  await closeClient(conn);
   return frames;
 }
 
@@ -64,7 +80,7 @@ test('rule 8: a terminal delivery is never reinjected on reconnect replay', asyn
   await once(first, 'message'); // hello.accepted
   assert.equal(hub.flushDeliveries(), 1);
   store.setDeliveryState(deliveries[0].id, 'completed');
-  first.close();
+  await closeClient(first);
   await new Promise((r) => setTimeout(r, 50));
 
   // Reconnect from cursor 0 — the whole event history is eligible for replay. Before the fix the
@@ -93,7 +109,7 @@ test('a still-outstanding delivery IS replayed on reconnect', async () => {
     roomId: room.id, actorId: crypto.randomUUID(), body: 'work', mentionSeatIds: [seat.id],
   });
   assert.equal(hub.flushDeliveries(), 1); // now 'sent', never acked — the node "crashed"
-  first.close();
+  await closeClient(first);
   await new Promise((r) => setTimeout(r, 50));
 
   const frames = await replayedFrames(addr.port, node.id, token);
@@ -140,6 +156,12 @@ test('a reconnecting node supersedes its previous connection', async () => {
     'the surviving connection must be the one that receives the delivery',
   );
 
-  second.close();
+  // Close BOTH client sockets. `first` was superseded by the hub, but that only closes the
+  // SERVER side — the client-side handle stays open in this process and keeps the event loop
+  // alive after every test has passed, which hangs `node --test`. Verified with
+  // process.getActiveResourcesInfo(): this file was leaving a TCPServerWrap and two
+  // TCPSocketWraps behind.
+  await closeClient(first);
+  await closeClient(second);
   await hub.close();
 });

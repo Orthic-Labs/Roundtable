@@ -82,8 +82,18 @@ test('E2E: the real compiled roundtable-node binary delivers a message to Codex 
     // select! loop and does not necessarily exit promptly, and its piped stdout/stderr keep handles
     // open in THIS process. `node --test` then finishes every test and hangs forever with nothing
     // left to report — indistinguishable from a stuck test, which is how it was misread for weeks.
-    nodeProc.kill('SIGKILL');
-    await once(nodeProc, 'exit');
+    // `once(proc,'exit')` waits for a FUTURE event. If the child already exited — which happens
+    // under load, when the hub closes first and the node exits on its own — that event has already
+    // fired and the await never resolves, hanging `node --test` forever after every test has
+    // reported. Guard on exitCode, and cap the wait so a wedged child cannot hang the runner
+    // either.
+    if (nodeProc.exitCode === null && nodeProc.signalCode === null) {
+      nodeProc.kill('SIGKILL');
+      await Promise.race([
+        once(nodeProc, 'exit'),
+        new Promise((r) => setTimeout(r, 2000)),
+      ]);
+    }
     nodeProc.stdout.destroy();
     nodeProc.stderr.destroy();
     await hub.close();
