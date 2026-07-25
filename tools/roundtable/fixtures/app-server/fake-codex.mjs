@@ -1,16 +1,24 @@
 #!/usr/bin/env node
 // Fixture Codex App Server, driven by roundtable-node's tests over stdio JSON-RPC.
 //
-// Shapes below are grounded in fixtures/app-server/schema/ (a real schema generated via
+// Every shape here is grounded in fixtures/app-server/schema/ (a real schema generated via
 // `codex app-server generate-json-schema --experimental` against a real, locally-installed
-// `codex` CLI) — not invented. In particular:
-// - `turn/started` / `turn/completed` carry `{threadId, turn: {id, status}}`, never a flat
-//   `turnId`/`status`. `status` is one of `inProgress | completed | interrupted | failed`.
-// - `thread/start` / `turn/start`'s `input` is an array of `UserInput` (tagged union); this
-//   fixture only understands the `text` variant, which is all roundtable-node ever sends.
-// - The real agent reply is an `item/completed` notification with `item.type === "agentMessage"`
-//   and a flat `item.text`, sent once the turn's content is ready — not accumulated from
-//   `item/agentMessage/delta` chunks (this fixture doesn't emit deltas at all).
+// `codex` CLI) — not invented. The load-bearing facts:
+// - `thread/start` takes CONFIGURATION ONLY (cwd, model, sandbox, approvalPolicy, …). It has no
+//   `input` field and it starts NO turn. It returns {thread: Thread} — the id is `thread.id`.
+// - `turn/start` requires {threadId, input} and returns {turn: Turn} — id at `turn.id`.
+// - `input` is an array of UserInput (tagged union); this fixture understands the `text` variant,
+//   which is all roundtable-node sends.
+// - `turn/started` / `turn/completed` carry {threadId, turn: {id, status}}, never a flat
+//   turnId/status. Status is one of inProgress | completed | interrupted | failed.
+// - The real agent reply is an `item/completed` notification with item.type === "agentMessage"
+//   and a flat item.text — not accumulated from `item/agentMessage/delta` chunks.
+// - Approvals are Guardian auto-reviews (`item/autoApprovalReview/started|completed`), NOT a
+//   server->client approval request. `tool/requestUserInput` does not exist in this protocol.
+//
+// Test hooks (not part of the real protocol, and namespaced so they can't be mistaken for it):
+// send input text containing "@@deny@@" to make this fixture emit a DENIED Guardian review
+// before completing the turn, exercising the approval path.
 import { randomUUID } from "node:crypto";
 
 function send(o) {
@@ -33,19 +41,37 @@ function sendTurnStarted(threadId, turnId) {
   });
 }
 
-// Emits item/completed then turn/completed ~10ms later. Callers send turn/started and their own
-// JSON-RPC `result` for the request that triggered this themselves — thread/start deliberately
-// sends turn/started BEFORE its id-response (see below; a real, documented race), so the
-// notification-vs-result ordering can't be hidden inside one shared helper.
+// Emits a DENIED Guardian review — the one state that actually blocks pending a human override.
+function sendDeniedReview(threadId, turnId) {
+  send({
+    jsonrpc: "2.0",
+    method: "item/autoApprovalReview/completed",
+    params: {
+      threadId,
+      turnId,
+      reviewId: randomUUID(),
+      startedAtMs: Date.now() - 5,
+      completedAtMs: Date.now(),
+      decisionSource: "guardian",
+      action: { type: "command", command: "rm -rf /tmp/x", cwd: "/tmp", source: "shell" },
+      review: { status: "denied", riskLevel: "high", rationale: "destructive command" },
+    },
+  });
+}
+
+// Emits the notification sequence after a turn is under way. Callers send turn/started and their
+// own JSON-RPC result themselves, so the notification-vs-result ordering stays visible per method.
 function emitCompletion(threadId, turnId, input) {
+  const text = extractText(input);
   setTimeout(() => {
+    if (text.includes("@@deny@@")) sendDeniedReview(threadId, turnId);
     send({
       jsonrpc: "2.0",
       method: "item/completed",
       params: {
         threadId,
         turnId,
-        item: { id: randomUUID(), type: "agentMessage", text: `echo: ${extractText(input)}` },
+        item: { id: randomUUID(), type: "agentMessage", text: `echo: ${text}` },
       },
     });
     send({
@@ -54,6 +80,24 @@ function emitCompletion(threadId, turnId, input) {
       params: { threadId, turn: { id: turnId, status: "completed" } },
     });
   }, 10);
+}
+
+function threadObject(threadId, cwd) {
+  const now = new Date().toISOString();
+  return {
+    id: threadId,
+    cliVersion: "0.0.1",
+    createdAt: now,
+    updatedAt: now,
+    cwd: cwd || "/tmp",
+    ephemeral: false,
+    modelProvider: "fake",
+    preview: "",
+    sessionId: randomUUID(),
+    source: "app",
+    status: "idle",
+    turns: [],
+  };
 }
 
 let buf = "";
@@ -77,22 +121,52 @@ process.stdin.on("data", (chunk) => {
       continue;
     }
     if (method === "thread/start") {
-      // Deliberately sends turn/started BEFORE the id-response `call()` is waiting on — a real
-      // race roundtable-node's tests document and rely on (see codex.rs's
-      // create_thread_round_trips_and_routes_events_to_the_seat).
+      // Config only, and NO turn is started — matching the real params/response.
+      const threadId = randomUUID();
+      send({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          thread: threadObject(threadId, params && params.cwd),
+          cwd: (params && params.cwd) || "/tmp",
+          model: "fake-model",
+          modelProvider: "fake",
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+          approvalsReviewer: "none",
+        },
+      });
+      continue;
+    }
+    if (method === "thread/resume") {
       const threadId = (params && params.threadId) || randomUUID();
-      const turnId = randomUUID();
-      sendTurnStarted(threadId, turnId);
-      send({ jsonrpc: "2.0", id, result: { threadId } });
-      emitCompletion(threadId, turnId, params && params.input);
+      send({ jsonrpc: "2.0", id, result: { thread: threadObject(threadId, params && params.cwd) } });
       continue;
     }
     if (method === "turn/start") {
       const threadId = params && params.threadId;
       const turnId = randomUUID();
-      send({ jsonrpc: "2.0", id, result: { turnId, threadId } });
+      send({
+        jsonrpc: "2.0",
+        id,
+        result: { turn: { id: turnId, status: "inProgress", items: [] } },
+      });
       sendTurnStarted(threadId, turnId);
       emitCompletion(threadId, turnId, params && params.input);
+      continue;
+    }
+    if (method === "turn/interrupt") {
+      const threadId = params && params.threadId;
+      send({ jsonrpc: "2.0", id, result: {} });
+      send({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { threadId, turn: { id: randomUUID(), status: "interrupted" } },
+      });
+      continue;
+    }
+    if (method === "thread/approveGuardianDeniedAction") {
+      send({ jsonrpc: "2.0", id, result: {} });
       continue;
     }
     if (method === "shutdown") {

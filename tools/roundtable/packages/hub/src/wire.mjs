@@ -20,6 +20,7 @@ export const HubFrame = Object.freeze({
   DELIVERY_ASSIGN: 'delivery.assign',
   APPROVAL_RESOLVE: 'approval.resolve',
   SEAT_DETACH: 'seat.detach',
+  SEAT_INTERRUPT: 'seat.interrupt',
   PING: 'ping',
 });
 

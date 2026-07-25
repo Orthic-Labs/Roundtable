@@ -9,6 +9,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachWebSocket } from './ws.mjs';
+import { log } from './log.mjs';
 import { encodeFrame, decodeFrame, HubFrame, NodeFrame } from './wire.mjs';
 import {
   SESSION_COOKIE, hashSecretBytes, tokenMatches, randomToken,
@@ -74,6 +75,7 @@ const ROUTES = [
   ['DELETE', '/api/rooms/:room_id/seats/:seat_id'],
   ['POST', '/api/rooms/:room_id/handoffs'],
   ['POST', '/api/approvals/:approval_id/resolve'],
+  ['POST', '/api/deliveries/:delivery_id/cancel'],
   ['GET', '/api/nodes'], ['GET', '/api/nodes/:node_id'],
 ];
 
@@ -184,6 +186,19 @@ export function createHub({
   };
 
   const server = createServer(async (req, res) => {
+    // One access line per request, emitted on finish so it carries the real status and duration.
+    // Never the body or query string — a room transcript is private content, not ops data.
+    const startedAt = Date.now();
+    res.on('finish', () => {
+      const fields = {
+        method: req.method, path: req.url?.split('?')[0],
+        status: res.statusCode, duration_ms: Date.now() - startedAt,
+      };
+      if (res.statusCode >= 500) log.error('http.request', fields);
+      else if (res.statusCode >= 400) log.warn('http.request', fields);
+      else log.info('http.request', fields);
+    });
+
     let url;
     try {
       url = new URL(req.url, 'http://localhost');
@@ -283,7 +298,35 @@ export function createHub({
         }
         case '/api/approvals/:approval_id/resolve': {
           const body = await readBody(req);
-          send(res, 200, { approval: store.resolveApproval(route.params.approval_id, body?.resolution) });
+          const approval = store.resolveApproval(route.params.approval_id, body?.resolution);
+          // Cancellation contract §3: an answer that arrived after the delivery was canceled is
+          // recorded but never acted on, so the node is not told about it.
+          if (!approval.after_cancel) {
+            const delivery = store.getDelivery(approval.delivery_id);
+            dispatch(delivery, HubFrame.APPROVAL_RESOLVE, {
+              approval_resolve: { approval_id: approval.id, decision: approval.resolution },
+            });
+          }
+          send(res, 200, { approval });
+          return;
+        }
+        // Cancellation contract §2: a delivery the node has already taken needs a real interrupt
+        // sent to that node; a still-queued one is simply failed and never reaches a provider.
+        case '/api/deliveries/:delivery_id/cancel': {
+          const body = await readBody(req);
+          const result = store.cancelDelivery(route.params.delivery_id, {
+            canceledBy: body?.canceled_by ?? 'human',
+            reason: body?.reason ?? '',
+          });
+          if (result.interrupt) {
+            dispatch(result.delivery, HubFrame.SEAT_INTERRUPT, {
+              seat_interrupt: {
+                delivery_id: result.delivery.id,
+                reason: body?.reason ?? 'canceled',
+              },
+            });
+          }
+          send(res, 200, result);
           return;
         }
         case '/api/nodes': {
@@ -375,7 +418,11 @@ export function createHub({
         conn.meta.nodeId = nodeId;
         conn.meta.cursor = Number(resumeCursor ?? 0) || 0;
         nodeConnections.add(conn);
-        conn.on('close', () => nodeConnections.delete(conn));
+        log.info('node.connected', { node_id: nodeId, resume_cursor: conn.meta.cursor });
+        conn.on('close', () => {
+          nodeConnections.delete(conn);
+          log.info('node.disconnected', { node_id: nodeId });
+        });
 
         // seat_tokens is sent empty: per-seat token issuance/rotation is not implemented and is
         // not invented here.
@@ -419,12 +466,12 @@ export function createHub({
       message_kind: kind, body, reply_to: replyTo, request_payload_sha256: sha,
     } = payload ?? {};
     if (!requestId || !seatId || !roomId || typeof body !== 'string') {
-      console.error('node.message.post: malformed frame, dropping', payload);
+      log.warn('node.message.post.malformed', { reason: 'missing seat_id or room_id' });
       return;
     }
     const seat = store.getSeat(seatId);
     if (!seat || seat.room_id !== roomId) {
-      console.error('node.message.post: unknown seat or room mismatch, dropping', { seatId, roomId });
+      log.warn('node.message.post.unknown_seat', { seat_id: seatId, room_id: roomId });
       return;
     }
     try {
@@ -432,7 +479,7 @@ export function createHub({
         roomId, actorId: seatId, actorKind: 'agent', kind, body, replyTo,
       }));
     } catch (e) {
-      console.error('node.message.post: dedupe/post failed', e.message);
+      log.error('node.message.post.failed', { seat_id: seatId, room_id: roomId, err: e });
     }
   }
 

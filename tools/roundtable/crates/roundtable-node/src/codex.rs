@@ -9,17 +9,30 @@
 //! `turn/interrupt`) are taken from `2026-07-22-roundtable-cross-device-architecture.md` and
 //! from the fixture above — not invented here.
 //!
-//! Wire shapes for `input` params and turn-lifecycle notifications are grounded in
-//! `fixtures/app-server/schema/` — a real schema generated from a real, locally-installed
-//! `codex` CLI (`codex app-server generate-json-schema --experimental`), not guessed. See that
-//! directory's README for what it corrected relative to `fake-codex.mjs` and this file's
-//! earlier assumptions (flat `turnId`/`status` fields, bare-string `input`).
+//! Every wire shape here is grounded in `fixtures/app-server/schema/` — a real schema generated
+//! from a real, locally-installed `codex` CLI (`codex app-server generate-json-schema
+//! --experimental`), not guessed. See that directory's README for the full list of what it
+//! corrected. The load-bearing ones:
+//! - `thread/start` takes **configuration only** — no `input` — and returns `{thread: Thread}`.
+//!   Creating a thread does not start a turn.
+//! - `turn/start` returns `{turn: Turn}`; ids live at `thread.id` / `turn.id`, never top-level.
+//! - `turn/started`/`turn/completed` carry `{threadId, turn: Turn}`; status is `turn.status`,
+//!   one of `completed | interrupted | failed | inProgress`.
+//! - Every `input` param is an array of `UserInput` (tagged union), not a string.
 //!
-//! Still NOT implemented, and deliberately not pretended: approval requests and
-//! `tool/requestUserInput`. Routed notifications: `turn/started`, `turn/completed`,
-//! `turn/interrupted`, `turn/failed` (turn lifecycle), and `item/completed` where
-//! `item.type == "agentMessage"` (real agent reply text, via `CodexEvent::body`).
-//! `item/agentMessage/delta` (live-streaming chunks) is intentionally not consumed here.
+//! Routed notifications: `turn/started`, `turn/completed` (lifecycle); `item/completed` (real
+//! content — agent messages, commands, file edits, tool calls, searches, plans, via
+//! `summarize_item`); and `item/autoApprovalReview/started|completed` (Guardian approvals, via
+//! `CodexEvent::approval`).
+//!
+//! **`tool/requestUserInput` does not exist in this protocol version** — verified absent from the
+//! generated schema. The architecture doc's reference to it predates this App Server. Approvals
+//! run through Guardian instead; see `CodexApproval`.
+//!
+//! Deliberately NOT consumed: `item/agentMessage/delta` and the other `*/delta` streams (this is
+//! a message-passing bridge, not a live-typing UI — the completed item carries the full text
+//! once), `reasoning` items (the model's private scratchpad), and `userMessage` items (the
+//! message we ourselves just sent, which would echo back into the room).
 //!
 //! Persists (seat_id, thread_id, cwd, model, active_turn_id) in `seats`, in memory only —
 //! nothing here yet persists to `NodeState`.
@@ -50,6 +63,32 @@ pub enum CodexTurnStatus {
     Cancelled,
 }
 
+/// A Guardian approval review, from `item/autoApprovalReview/started|completed`.
+///
+/// This Codex version has **no** classic "server asks the client to approve an exec" JSON-RPC
+/// request, and no `tool/requestUserInput` method at all (verified absent from the generated
+/// schema — see `fixtures/app-server/schema/README.md`). Approvals instead run through a
+/// Guardian that auto-reviews each risky action and reports the outcome; a human overrides a
+/// **denied** action by calling `thread/approveGuardianDeniedAction`. That is the only
+/// human-in-the-loop approval path that actually exists here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexApproval {
+    pub review_id: String,
+    /// `command` | `execve` | `applyPatch` | `networkAccess` | `mcpToolCall` | `requestPermissions`
+    pub action_type: String,
+    /// Human-readable one-liner for the action, built from the variant's own fields.
+    pub summary: String,
+    /// `inProgress` | `approved` | `denied` | `timedOut` | `aborted`
+    pub status: String,
+    pub risk_level: Option<String>,
+    pub rationale: Option<String>,
+    /// The full notification `params`, kept verbatim so an override can be replayed to
+    /// `thread/approveGuardianDeniedAction` without this adapter having to model
+    /// `GuardianAssessmentEvent` — a type the schema declares only as "serialized", with no
+    /// shape. Passing through what we received is honest; inventing a shape would not be.
+    pub raw_event: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexEvent {
     pub seat_id: Uuid,
@@ -62,6 +101,14 @@ pub struct CodexEvent {
     pub body: String,
     pub kind: String,
     pub provider_request_id: Option<String>,
+    /// The `ThreadItem` variant this event came from, for `item/completed` only — e.g.
+    /// `agentMessage`, `commandExecution`, `fileChange`. Lets a consumer distinguish the agent
+    /// actually speaking from the agent doing something, without pattern-matching on `body`.
+    #[serde(default)]
+    pub item_type: Option<String>,
+    /// Set only for `item/autoApprovalReview/*` events.
+    #[serde(default)]
+    pub approval: Option<CodexApproval>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,15 +116,22 @@ pub struct CodexEvent {
 pub enum CodexCommand {
     Connect,
     ListThreads,
-    /// Creates a brand-new App Server thread (`thread/start`). Added alongside this file's other
-    /// changes: the enum previously had no way to create a first thread for a seat, only
-    /// `ResumeThread` for an existing one and `StartTurn`, which itself requires a `thread_id`
-    /// that must already exist.
-    CreateThread { input: String, cwd: Option<String> },
+    /// Creates a brand-new App Server thread (`thread/start`).
+    ///
+    /// **Takes no input.** `ThreadStartParams` is configuration only (`cwd`, `model`, `sandbox`,
+    /// `approvalPolicy`, …) — verified against the real schema. Creating a thread does NOT start
+    /// a turn; send `StartTurn` afterward to actually say something. An earlier version of this
+    /// enum carried an `input: String` here and sent it on the wire, which a real App Server
+    /// would have ignored or rejected.
+    CreateThread { cwd: Option<String> },
     ResumeThread { thread_id: String },
     StartTurn { thread_id: String, input: String },
     SteerTurn { thread_id: String, expected_turn_id: String, input: String },
     InterruptTurn { thread_id: String },
+    /// Human override for an action Guardian denied (`thread/approveGuardianDeniedAction`).
+    /// `event` is the `GuardianAssessmentEvent` passed straight back from the review
+    /// notification that reported the denial.
+    ApproveGuardianDeniedAction { thread_id: String, event: Value },
     Shutdown,
 }
 
@@ -87,6 +141,99 @@ pub enum CodexCommand {
 /// plain strings; this is the wire-boundary conversion, done once, here.
 fn text_input(text: &str) -> Value {
     serde_json::json!([{ "type": "text", "text": text }])
+}
+
+/// Trims a string to `max` chars for a room-readable one-liner, collapsing newlines.
+fn brief(s: &str, max: usize) -> String {
+    let one_line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= max {
+        return one_line;
+    }
+    let cut: String = one_line.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+/// Renders a completed `ThreadItem` as room-readable text, or `None` for item types that carry no
+/// useful standalone content.
+///
+/// Variant names and fields are exactly those in the real `ThreadItem` union
+/// (`fixtures/app-server/schema/`). `agentMessage` returns its text bare — that is the agent
+/// actually speaking. Everything else is prefixed so a reader can tell activity from speech;
+/// `main.rs` posts the bare case as `Chat` and the rest as `Progress`.
+fn summarize_item(item: &Value) -> Option<String> {
+    let get = |k: &str| item.get(k).and_then(Value::as_str).unwrap_or_default();
+    Some(match item.get("type").and_then(Value::as_str)? {
+        "agentMessage" => item.get("text").and_then(Value::as_str)?.to_string(),
+        "commandExecution" => {
+            let exit = item.get("exitCode").and_then(Value::as_i64);
+            let status = get("status");
+            let tail = match exit {
+                Some(0) => " (ok)".to_string(),
+                Some(code) => format!(" (exit {code})"),
+                None if !status.is_empty() => format!(" ({status})"),
+                None => String::new(),
+            };
+            format!("$ {}{}", brief(get("command"), 200), tail)
+        }
+        "fileChange" => {
+            let files: Vec<String> = item.get("changes").and_then(Value::as_array)
+                .map(|cs| cs.iter()
+                    .filter_map(|c| c.get("path").and_then(Value::as_str))
+                    .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                    .collect())
+                .unwrap_or_default();
+            let n = files.len();
+            if files.is_empty() {
+                "edited files".to_string()
+            } else {
+                format!("edited {} file{}: {}", n, if n == 1 { "" } else { "s" }, brief(&files.join(", "), 200))
+            }
+        }
+        "mcpToolCall" => format!("tool {}::{} ({})", get("server"), get("tool"), get("status")),
+        "dynamicToolCall" => format!("tool {} ({})", get("tool"), get("status")),
+        "webSearch" => format!("searched: {}", brief(get("query"), 160)),
+        "imageGeneration" => format!("generated an image ({})", get("status")),
+        "imageView" => format!("viewed image {}", brief(get("path"), 160)),
+        "plan" => format!("plan: {}", brief(get("text"), 400)),
+        // Deliberately not surfaced as room content: reasoning is the model's private scratchpad,
+        // userMessage is the message we ourselves just sent, and the rest are UI-only lifecycle
+        // markers. Returning None drops them rather than filling the room with noise.
+        _ => return None,
+    })
+}
+
+/// One-line description of a Guardian-reviewed action, per `GuardianApprovalReviewAction`'s real
+/// variants (command | execve | applyPatch | networkAccess | mcpToolCall | requestPermissions).
+fn summarize_approval_action(action: &Value) -> String {
+    let get = |k: &str| action.get(k).and_then(Value::as_str).unwrap_or_default();
+    match action.get("type").and_then(Value::as_str).unwrap_or("unknown") {
+        "command" => format!("run: {}", brief(get("command"), 300)),
+        "execve" => {
+            let argv: Vec<&str> = action.get("argv").and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            format!("exec: {} {}", get("program"), brief(&argv.join(" "), 260))
+        }
+        "applyPatch" => {
+            let n = action.get("files").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+            format!("patch {} file{}", n, if n == 1 { "" } else { "s" })
+        }
+        "networkAccess" => format!(
+            "network: {}://{}:{}",
+            get("protocol"), get("host"),
+            action.get("port").and_then(Value::as_u64).unwrap_or(0),
+        ),
+        "mcpToolCall" => format!("mcp tool: {}::{}", get("server"), get("toolName")),
+        "requestPermissions" => {
+            let reason = get("reason");
+            if reason.is_empty() {
+                "requests additional permissions".to_string()
+            } else {
+                format!("requests additional permissions: {}", brief(reason, 240))
+            }
+        }
+        other => format!("{other} action"),
+    }
 }
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
@@ -258,12 +405,13 @@ impl CodexAdapter {
         params: &Value,
         seats: &Arc<Mutex<HashMap<Uuid, SeatState>>>,
     ) -> Option<CodexEvent> {
-        let (thread_id, turn_id, status, body) = match method {
+        let mut item_type = None;
+        let (thread_id, turn_id, status, body, approval) = match method {
             "turn/started" => {
                 let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
                 let turn = params.get("turn")?;
                 let turn_id = turn.get("id").and_then(Value::as_str).map(str::to_string);
-                (thread_id, turn_id, CodexTurnStatus::Running, String::new())
+                (thread_id, turn_id, CodexTurnStatus::Running, String::new(), None)
             }
             "turn/completed" => {
                 let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
@@ -275,17 +423,42 @@ impl CodexAdapter {
                     Some("inProgress") => CodexTurnStatus::Running,
                     _ => CodexTurnStatus::Completed, // "completed", or an unrecognized future value
                 };
-                (thread_id, turn_id, status, String::new())
+                (thread_id, turn_id, status, String::new(), None)
             }
             "item/completed" => {
                 let item = params.get("item")?;
-                if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
-                    return None; // tool calls, file changes, reasoning, etc. — not handled here
-                }
                 let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
                 let turn_id = params.get("turnId").and_then(Value::as_str).map(str::to_string);
-                let text = item.get("text").and_then(Value::as_str)?.to_string();
-                (thread_id, turn_id, CodexTurnStatus::Running, text)
+                let body = summarize_item(item)?;
+                item_type = item.get("type").and_then(Value::as_str).map(str::to_string);
+                (thread_id, turn_id, CodexTurnStatus::Running, body, None)
+            }
+            "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" => {
+                let thread_id = params.get("threadId").and_then(Value::as_str)?.to_string();
+                let turn_id = params.get("turnId").and_then(Value::as_str).map(str::to_string);
+                let review = params.get("review")?;
+                let review_status = review.get("status").and_then(Value::as_str)
+                    .unwrap_or("inProgress").to_string();
+                let action = params.get("action")?;
+                let approval = CodexApproval {
+                    review_id: params.get("reviewId").and_then(Value::as_str)
+                        .unwrap_or_default().to_string(),
+                    action_type: action.get("type").and_then(Value::as_str)
+                        .unwrap_or("unknown").to_string(),
+                    summary: summarize_approval_action(action),
+                    status: review_status.clone(),
+                    risk_level: review.get("riskLevel").and_then(Value::as_str).map(str::to_string),
+                    rationale: review.get("rationale").and_then(Value::as_str).map(str::to_string),
+                    raw_event: params.clone(),
+                };
+                // Only a DENIED action is actually blocked pending a human — that is the one
+                // state Roundtable must surface as an approval. Everything else is informational.
+                let status = if review_status == "denied" {
+                    CodexTurnStatus::WaitingApproval
+                } else {
+                    CodexTurnStatus::Running
+                };
+                (thread_id, turn_id, status, String::new(), Some(approval))
             }
             _ => return None,
         };
@@ -295,6 +468,8 @@ impl CodexAdapter {
             seat_id, thread_id, turn_id, status, body,
             kind: method.to_string(),
             provider_request_id: None,
+            item_type,
+            approval,
         })
     }
 
@@ -349,17 +524,25 @@ impl CodexAdapter {
                 "Connect and Shutdown go through CodexAdapter::connect()/shutdown(), not execute()".into(),
             )),
             CodexCommand::ListThreads => self.call("thread/list", serde_json::json!({})).await,
-            CodexCommand::CreateThread { input, cwd } => {
-                let result = self.call(
-                    "thread/start", serde_json::json!({"input": text_input(&input), "cwd": cwd}),
-                ).await?;
-                if let Some(thread_id) = result.get("threadId").and_then(Value::as_str) {
-                    let mut seats = self.seats.lock().await;
-                    seats.insert(seat_id, SeatState {
-                        seat_id, thread_id: thread_id.to_string(), cwd,
-                        model: String::new(), active_turn_id: None, last_progress_ms: 0,
-                    });
+            // `thread/start` is CONFIGURATION ONLY — no input, and it starts no turn. Its
+            // response is `{thread: Thread}`, so the id is `thread.id`, never a top-level
+            // `threadId`. Both facts verified against the real schema; the previous code sent an
+            // `input` the params have no field for and then read a `threadId` that is never there.
+            CodexCommand::CreateThread { cwd } => {
+                let mut params = serde_json::Map::new();
+                if let Some(cwd) = &cwd {
+                    params.insert("cwd".into(), Value::String(cwd.clone()));
                 }
+                let result = self.call("thread/start", Value::Object(params)).await?;
+                let thread_id = result.get("thread").and_then(|t| t.get("id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| NodeError::Provider(
+                        "thread/start response had no thread.id".into(),
+                    ))?;
+                self.seats.lock().await.insert(seat_id, SeatState {
+                    seat_id, thread_id: thread_id.to_string(), cwd,
+                    model: String::new(), active_turn_id: None, last_progress_ms: 0,
+                });
                 Ok(result)
             }
             CodexCommand::ResumeThread { thread_id } => {
@@ -367,12 +550,13 @@ impl CodexAdapter {
                 self.upsert_seat_thread(seat_id, &thread_id).await;
                 Ok(result)
             }
+            // Response is `{turn: Turn}` — the id is `turn.id`, not a top-level `turnId`.
             CodexCommand::StartTurn { thread_id, input } => {
                 let result = self.call(
                     "turn/start", serde_json::json!({"threadId": thread_id, "input": text_input(&input)}),
                 ).await?;
                 self.upsert_seat_thread(seat_id, &thread_id).await;
-                if let Some(turn_id) = result.get("turnId").and_then(Value::as_str) {
+                if let Some(turn_id) = result.get("turn").and_then(|t| t.get("id")).and_then(Value::as_str) {
                     self.set_active_turn(seat_id, Some(turn_id.to_string())).await;
                 }
                 Ok(result)
@@ -383,7 +567,16 @@ impl CodexAdapter {
                 })).await
             }
             CodexCommand::InterruptTurn { thread_id } => {
-                self.call("turn/interrupt", serde_json::json!({"threadId": thread_id})).await
+                let result = self.call("turn/interrupt", serde_json::json!({"threadId": thread_id})).await?;
+                // The turn is over; a later delivery for this seat must start a fresh turn rather
+                // than try to steer the one just interrupted.
+                self.set_active_turn(seat_id, None).await;
+                Ok(result)
+            }
+            CodexCommand::ApproveGuardianDeniedAction { thread_id, event } => {
+                self.call("thread/approveGuardianDeniedAction", serde_json::json!({
+                    "threadId": thread_id, "event": event,
+                })).await
             }
         }
     }
@@ -471,76 +664,134 @@ mod tests {
         adapter.shutdown().await.unwrap();
     }
 
-    /// Proves a full round trip end-to-end: execute() sends the real `thread/start` frame to a
-    /// real child process, the reader loop parses the response and notifications the fixture
-    /// emits, and a resulting CodexEvent comes out the subscribe() channel routed to the correct
-    /// seat_id — the exact path a DeliveryAssign handler will need. Also surfaces a real ordering
-    /// race (documented inline below) rather than hiding it.
+    /// Proves the real two-call round trip end-to-end against a real child process: `thread/start`
+    /// creates a thread and starts NOTHING, then `turn/start` runs a turn whose notifications come
+    /// back out the subscribe() channel routed to the correct seat_id — the exact path a
+    /// DeliveryAssign handler takes.
+    ///
+    /// This also documents the death of a race the previous version of this test asserted on. When
+    /// `thread/start` was (wrongly) believed to take `input` and start a turn, its `turn/started`
+    /// notification could arrive before the response carrying the thread id, so the seat mapping
+    /// did not exist yet and the event was dropped. The real protocol has no such window:
+    /// `thread/start` emits no turn notifications at all, so by the time `turn/start` is sent the
+    /// mapping is already in place and `turn/started` is delivered like everything else.
     #[tokio::test]
-    async fn create_thread_round_trips_and_routes_events_to_the_seat() {
+    async fn create_thread_then_turn_round_trips_and_routes_events_to_the_seat() {
         let mut adapter = fixture_adapter();
         let mut events = adapter.subscribe().await;
         adapter.connect().await.unwrap();
 
         let seat_id = Uuid::now_v7();
-        let result = adapter.execute(
-            seat_id,
-            CodexCommand::CreateThread { input: "hello".into(), cwd: None },
-        ).await.expect("thread/start must succeed against the fixture");
-        let thread_id = result.get("threadId").and_then(Value::as_str)
-            .expect("fixture always returns a threadId").to_string();
+        let result = adapter.execute(seat_id, CodexCommand::CreateThread { cwd: None })
+            .await.expect("thread/start must succeed against the fixture");
+        let thread_id = result.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str)
+            .expect("thread/start returns {thread: {id}}").to_string();
 
         let seat = adapter.seat(seat_id).await.expect("execute() must register the seat");
         assert_eq!(seat.thread_id, thread_id);
 
-        // REAL RACE, not a test artifact: the fixture's thread/start handler sends turn/started
-        // on the wire BEFORE the id-response that `call()` is waiting on (see fake-codex.mjs).
-        // The reader loop processes turn/started as soon as it arrives — which is BEFORE
-        // execute()'s `seats.insert(seat_id, ...)` below has run, because that insert only
-        // happens after `call()` resolves. notification_to_event() therefore finds no seat
-        // matching this thread_id yet and correctly drops it (there is genuinely nowhere to
-        // route it — the seat_id<->thread_id mapping does not exist until the response arrives).
-        // Only the pair sent ~10ms later — item/completed then turn/completed — lands after the
-        // mapping exists.
-        //
-        // This is a real limitation of CreateThread specifically: the very first notification
-        // for a brand-new thread can race ahead of the response that makes it routable. Fixing it
-        // properly needs a "pending creation" table keyed by request_id so an early notification
-        // can be buffered until the create resolves — not implemented here; do not paper over it
-        // by guessing at a client-supplied thread ID for thread/start without confirming that's
-        // real App Server behavior rather than fixture convenience.
+        // thread/start starts no turn, so nothing has been emitted yet.
+        assert!(
+            timeout(Duration::from_millis(150), events.recv()).await.is_err(),
+            "thread/start must not produce any turn notification",
+        );
+
+        adapter.execute(seat_id, CodexCommand::StartTurn {
+            thread_id: thread_id.clone(), input: "hello".into(),
+        }).await.expect("turn/start must succeed");
+
+        // No race now: turn/started arrives after the mapping already exists, so it is delivered.
         let first = timeout(Duration::from_secs(2), events.recv()).await
             .expect("must not time out").expect("channel must not close");
         assert_eq!(first.seat_id, seat_id);
         assert_eq!(first.thread_id, thread_id);
-        assert_eq!(first.kind, "item/completed", "turn/started is lost to the race described above");
-        assert_eq!(first.body, "echo: hello", "item/completed must carry the real agentMessage text");
+        assert_eq!(first.kind, "turn/started");
+        assert_eq!(first.status, CodexTurnStatus::Running);
 
         let second = timeout(Duration::from_secs(2), events.recv()).await
             .expect("must not time out").expect("channel must not close");
-        assert_eq!(second.seat_id, seat_id);
-        assert_eq!(second.thread_id, thread_id);
-        assert_eq!(second.kind, "turn/completed");
-        assert_eq!(second.status, CodexTurnStatus::Completed);
+        assert_eq!(second.kind, "item/completed");
+        assert_eq!(second.item_type.as_deref(), Some("agentMessage"));
+        assert_eq!(second.body, "echo: hello", "must carry the real agentMessage text");
+
+        let third = timeout(Duration::from_secs(2), events.recv()).await
+            .expect("must not time out").expect("channel must not close");
+        assert_eq!(third.kind, "turn/completed");
+        assert_eq!(third.status, CodexTurnStatus::Completed);
+
+        adapter.shutdown().await.unwrap();
+    }
+
+    /// The Guardian approval path: a denied action surfaces as a `WaitingApproval` event carrying
+    /// a `CodexApproval`, and the raw event it carries can be replayed to
+    /// `thread/approveGuardianDeniedAction` as a human override.
+    #[tokio::test]
+    async fn a_denied_guardian_action_surfaces_as_an_approval() {
+        let mut adapter = fixture_adapter();
+        let mut events = adapter.subscribe().await;
+        adapter.connect().await.unwrap();
+
+        let seat_id = Uuid::now_v7();
+        let result = adapter.execute(seat_id, CodexCommand::CreateThread { cwd: None }).await.unwrap();
+        let thread_id = result.get("thread").and_then(|t| t.get("id"))
+            .and_then(Value::as_str).unwrap().to_string();
+        adapter.execute(seat_id, CodexCommand::StartTurn {
+            thread_id: thread_id.clone(), input: "please @@deny@@ this".into(),
+        }).await.unwrap();
+
+        // turn/started, then the denied review.
+        let mut approval = None;
+        for _ in 0..4 {
+            let ev = timeout(Duration::from_secs(2), events.recv()).await
+                .expect("must not time out").expect("channel must not close");
+            if let Some(a) = ev.approval {
+                assert_eq!(ev.status, CodexTurnStatus::WaitingApproval);
+                approval = Some(a);
+                break;
+            }
+        }
+        let approval = approval.expect("a denied guardian review must produce an approval event");
+        assert_eq!(approval.status, "denied");
+        assert_eq!(approval.action_type, "command");
+        assert_eq!(approval.summary, "run: rm -rf /tmp/x");
+        assert_eq!(approval.risk_level.as_deref(), Some("high"));
+
+        // The override replays the raw event verbatim — the fixture accepts it.
+        adapter.execute(seat_id, CodexCommand::ApproveGuardianDeniedAction {
+            thread_id, event: approval.raw_event,
+        }).await.expect("approving a denied action must succeed");
 
         adapter.shutdown().await.unwrap();
     }
 
     /// The fixture returns a JSON-RPC error for any method it does not implement — this proves
     /// `call()` surfaces that as an `Err` with the App Server's own message, not a silent Ok or a
-    /// panic. `thread/resume` is a real App Server method; it is simply not in this fixture.
+    /// panic. `thread/list` is a real App Server method; it is simply not in this fixture.
     #[tokio::test]
     async fn an_unimplemented_method_surfaces_as_a_real_error() {
         let mut adapter = fixture_adapter();
         adapter.connect().await.unwrap();
-        let err = adapter.execute(
-            Uuid::now_v7(),
-            CodexCommand::ResumeThread { thread_id: "thr-1".into() },
-        ).await.expect_err("the fixture does not implement thread/resume");
+        let err = adapter.execute(Uuid::now_v7(), CodexCommand::ListThreads)
+            .await.expect_err("the fixture does not implement thread/list");
         assert!(
-            err.to_string().contains("thread/resume"),
+            err.to_string().contains("thread/list"),
             "error should name the method that failed: {err}",
         );
+        adapter.shutdown().await.unwrap();
+    }
+
+    /// Resuming an existing thread binds it to the seat, so a delivery for a seat whose thread
+    /// already exists starts a turn on that thread rather than creating a second one.
+    #[tokio::test]
+    async fn resume_thread_binds_the_existing_thread_to_the_seat() {
+        let mut adapter = fixture_adapter();
+        adapter.connect().await.unwrap();
+        let seat_id = Uuid::now_v7();
+        adapter.execute(seat_id, CodexCommand::ResumeThread { thread_id: "thr-1".into() })
+            .await.expect("thread/resume must succeed against the fixture");
+        let seat = adapter.seat(seat_id).await.expect("resume must register the seat");
+        assert_eq!(seat.thread_id, "thr-1");
+        assert!(seat.active_turn_id.is_none(), "resuming does not start a turn");
         adapter.shutdown().await.unwrap();
     }
 

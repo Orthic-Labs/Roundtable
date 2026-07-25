@@ -356,19 +356,127 @@ export class Store {
   }
 
   /** Resolve once. A second resolution is refused so a late click cannot overturn a decision. */
+  /**
+   * Resolve a pending approval.
+   *
+   * Cancellation contract §3: an approval whose delivery was canceled is in state `canceled`, not
+   * `pending`. A human clicking Allow/Deny after that is NOT an error and must not be silently
+   * dropped — it is recorded as `approval_resolved_after_cancel` and a system message marks the
+   * approval stale. The node is never told to invoke the provider in that case; the caller can
+   * tell the two outcomes apart by the returned `after_cancel` flag.
+   */
   resolveApproval(approvalId, resolution) {
     return this.tx(() => {
       const row = this.#db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
       if (!row) throw new StoreError('unknown_approval');
-      if (row.state !== 'pending') throw new StoreError('already_resolved');
+      if (row.state === 'resolved') throw new StoreError('already_resolved');
       const decisions = JSON.parse(row.decisions_json);
       if (!decisions.includes(resolution)) throw new StoreError('invalid_resolution');
+
+      if (row.state === 'canceled') {
+        this.#db
+          .prepare("UPDATE approvals SET state = 'resolved', resolution = 'approval_resolved_after_cancel', resolved_at_ms = ? WHERE id = ?")
+          .run(Date.now(), approvalId);
+        this.#postMessageLocked({
+          roomId: row.room_id,
+          actorId: row.seat_id,
+          actorKind: 'system',
+          kind: 'system',
+          body: `Approval was answered "${resolution}" after the delivery had already been canceled. The answer was recorded but NOT acted on; the provider was not invoked.`,
+        });
+        const approval = this.#db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
+        return { ...approval, after_cancel: true };
+      }
 
       this.#db
         .prepare("UPDATE approvals SET state = 'resolved', resolution = ?, resolved_at_ms = ? WHERE id = ?")
         .run(resolution, Date.now(), approvalId);
-      return this.#db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
+      const approval = this.#db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
+      return { ...approval, after_cancel: false };
     });
+  }
+
+  /**
+   * Cancel a delivery, per the architecture's Cancellation contract.
+   *
+   * Implements §1 (cancel before the provider starts — straight to `failed`, no provider call),
+   * §2 (cancel while running — caller must post `seat.interrupt` to the node; signalled by the
+   * returned `interrupt` flag), §3 (cancel while waiting on approval — the in-flight approval is
+   * killed so a later click lands in the after-cancel path above), and §7 (audit trail — a typed
+   * system message carrying canceled_by, delivery_id, seat_alias, and reason).
+   *
+   * §5 — **no rollback** — is enforced by what this method deliberately does NOT do: it never
+   * deletes or retracts messages already in the transcript. Work already done stays recorded;
+   * cancel prevents further work, it does not undo prior work. The test
+   * `cancel_does_not_roll_back_work_already_recorded` is what holds that invariant.
+   */
+  cancelDelivery(deliveryId, { canceledBy = 'human', reason = '' } = {}) {
+    return this.tx(() => {
+      const d = this.#db.prepare('SELECT * FROM deliveries WHERE id = ?').get(deliveryId);
+      if (!d) throw new StoreError('unknown_delivery');
+      if (['completed', 'failed', 'dead_letter'].includes(d.state)) {
+        throw new StoreError('delivery_not_cancelable');
+      }
+
+      // The provider is only actually running once the node has taken the delivery. A `queued`
+      // delivery has never been sent to a node, so there is nothing to interrupt (§1).
+      const interrupt = ['sent', 'acked', 'running', 'waiting_approval'].includes(d.state);
+      const errorCode = `canceled_by_${canceledBy}`;
+      const now = Date.now();
+
+      this.#db
+        .prepare('UPDATE deliveries SET state = ?, error_code = ?, lease_until_ms = NULL, updated_at_ms = ? WHERE id = ?')
+        .run('failed', errorCode, now, deliveryId);
+
+      // §3: kill any approval still waiting on this delivery.
+      const killed = this.#db
+        .prepare("SELECT id FROM approvals WHERE delivery_id = ? AND state = 'pending'")
+        .all(deliveryId);
+      if (killed.length > 0) {
+        this.#db
+          .prepare("UPDATE approvals SET state = 'canceled' WHERE delivery_id = ? AND state = 'pending'")
+          .run(deliveryId);
+      }
+
+      // §7: audit trail. seat_alias is resolved here so the transcript reads without a join.
+      const seat = this.#db.prepare('SELECT alias FROM seats WHERE id = ?').get(d.seat_id);
+      const alias = seat?.alias ?? d.seat_id;
+      const detail = reason ? ` Reason: ${reason}` : '';
+      this.#postMessageLocked({
+        roomId: d.room_id,
+        actorId: d.seat_id,
+        actorKind: 'system',
+        kind: 'system',
+        body: `Delivery ${deliveryId} to ${alias} was canceled by ${canceledBy} (${errorCode}).${detail} Work already completed is NOT rolled back.`,
+      });
+
+      return {
+        delivery: this.#db.prepare(
+          `SELECT d.*, s.node_id FROM deliveries d JOIN seats s ON s.id = d.seat_id WHERE d.id = ?`,
+        ).get(deliveryId),
+        interrupt,
+        canceledApprovals: killed.map((r) => r.id),
+      };
+    });
+  }
+
+  /**
+   * A delivery plus the `node_id` that owns its seat. The join matters: `dispatch()` routes a
+   * frame to the connection for `delivery.node_id`, and a bare `SELECT * FROM deliveries` has no
+   * such column — it would silently broadcast to whichever node answered first.
+   */
+  getDelivery(deliveryId) {
+    return this.#db.prepare(
+      `SELECT d.*, s.node_id FROM deliveries d JOIN seats s ON s.id = d.seat_id WHERE d.id = ?`,
+    ).get(deliveryId);
+  }
+
+  /** Marks a delivery as running/waiting_approval etc. from a node's `delivery.state` post. */
+  setDeliveryState(deliveryId, state, errorCode = null) {
+    this.#db
+      .prepare('UPDATE deliveries SET state = ?, error_code = ?, updated_at_ms = ? WHERE id = ?')
+      .run(state, errorCode, Date.now(), deliveryId);
+    return this.getDelivery(deliveryId);
   }
 
   pendingApprovals(roomId) {

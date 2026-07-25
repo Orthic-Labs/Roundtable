@@ -195,6 +195,9 @@ pub enum HubEvent {
     },
     ApprovalResolve { approval_id: Uuid, decision: String },
     SeatDetach { seat_id: Uuid, reason: String },
+    /// Cancellation contract §2 — the operator canceled a delivery this node is actively running.
+    /// The node translates it to the provider's native interrupt (Codex `turn/interrupt`).
+    SeatInterrupt { delivery_id: Uuid, reason: String },
     Ping { nonce: String },
 }
 
@@ -370,8 +373,19 @@ impl HubClient {
         rx.recv().await
     }
 
+    /// Idempotent: a seat receiving many deliveries must not grow this vec without bound (it is
+    /// scanned by `owns_seat` on every outbound post).
     pub async fn register_seat(&self, seat_id: Uuid) {
-        self.owned_seats.lock().await.push(seat_id);
+        let mut seats = self.owned_seats.lock().await;
+        if !seats.contains(&seat_id) {
+            seats.push(seat_id);
+        }
+    }
+
+    /// Drops ownership of a seat — used when the hub detaches it. A later post for this seat is
+    /// then correctly refused rather than silently accepted for a seat we no longer serve.
+    pub async fn unregister_seat(&self, seat_id: Uuid) {
+        self.owned_seats.lock().await.retain(|s| *s != seat_id);
     }
 
     pub async fn owns_seat(&self, seat_id: Uuid) -> bool {

@@ -95,23 +95,28 @@ test('E2E: the real compiled roundtable-node binary delivers a message to Codex 
   assert.equal(deliveries.length, 1);
   assert.equal(hub.flushDeliveries(), 1, 'the connected node should take the delivery');
 
-  // The real node: receives delivery.assign -> registers the seat -> calls execute() against the
-  // real fixture process -> receives CodexEvents -> posts node.message.post back to this hub, once
-  // per routed event. The fixture emits, in order: turn/started (lost to the real
-  // CreateThread race documented in codex.rs — dropped before it's routable), item/completed
-  // with the real agentMessage text, then turn/completed. So the first agent-authored message to
-  // land is the real content, not a synthetic status line.
-  const replyLanded = await waitFor(
-    () => store.listMessages(room.id).some((m) => m.actor_id === seat.id),
+  // The real node: receives delivery.assign -> registers the seat -> thread/start (creates the
+  // thread, starts nothing) -> turn/start -> receives CodexEvents -> posts node.message.post back
+  // to this hub, once per routed event. The fixture emits, in order: turn/started, item/completed
+  // carrying the real agentMessage text, then turn/completed. All three are routable now: since
+  // thread/start starts no turn, the seat->thread mapping already exists before the first
+  // notification, so the old CreateThread race that used to swallow turn/started is gone.
+  const contentLanded = await waitFor(
+    () => store.listMessages(room.id).some((m) => m.body === 'echo: say hello'),
     5000,
   );
-  assert.ok(replyLanded, `no reply from the node within 5s. Node output:\n${nodeOutput}`);
+  assert.ok(contentLanded, `no agent content from the node within 5s. Node output:\n${nodeOutput}`);
 
   const agentMessages = store.listMessages(room.id).filter((m) => m.actor_id === seat.id);
-  const reply = agentMessages[0];
+  const reply = agentMessages.find((m) => m.body === 'echo: say hello');
   assert.equal(reply.actor_kind, 'agent');
-  assert.equal(reply.body, 'echo: say hello',
-    'the first agent message must be the real item/completed agentMessage text, not a synthetic status line');
+  assert.equal(reply.kind, 'chat',
+    "the agent actually speaking must post as chat, not progress");
+
+  // The lifecycle line is still posted, as progress — visible, but never mistaken for speech.
+  const lifecycle = agentMessages.find((m) => m.body.startsWith('[roundtable-node] turn'));
+  assert.ok(lifecycle, 'turn lifecycle should still be visible in the room');
+  assert.equal(lifecycle.kind, 'progress');
 });
 
 function waitFor(predicate, timeoutMs) {
