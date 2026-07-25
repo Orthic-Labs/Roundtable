@@ -87,7 +87,8 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
   unix socket and its reply posts back to the room — verified live with Codex and Claude seats
   answering in the same room. Still unimplemented over IPC: handoff.create, approval.verdict,
   session.join/leave, transcript.read/search (each returns an explicit error, not a fake success).
-- **Windows** — no installer, never built or run there.
+- **Windows** — never built or run. `roundtable-node` does not even COMPILE there: `ipc.rs`
+  imports `UnixListener`/`UnixStream` unconditionally. Full brief: [`WINDOWS-HANDOFF.md`](./WINDOWS-HANDOFF.md).
 - The node never advances its own replay cursor (always reconnects at 0). Harmless now that the hub
   refuses to replay terminal deliveries, but it is not doing its job.
 - Streaming deltas and most `ThreadItem` variants are not surfaced.
