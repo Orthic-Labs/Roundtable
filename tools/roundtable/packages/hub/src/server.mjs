@@ -498,11 +498,61 @@ export function createHub({
         handleNodeMessagePost(frame.payload?.message_post);
         return;
       }
+      if (frame.type === NodeFrame.HANDOFF_CREATE) {
+        handleNodeHandoffCreate(conn, frame.payload?.handoff_create);
+        return;
+      }
       if (frame.type === NodeFrame.QUERY) {
         handleNodeQuery(conn, frame.payload?.query_request);
       }
     });
   });
+
+  /**
+   * A seat handing off to another seat in the same room.
+   *
+   * `node.handoff.create` was in the wire vocabulary and the node has always sent it, but nothing
+   * here consumed it: the frame decoded, matched no branch, and was dropped. The node resolves its
+   * caller as soon as the frame is written (same fire-and-forget contract as `message.post`), so
+   * the agent was told the handoff succeeded and no handoff row was ever written. Found by reading
+   * the production database after a live handoff reported success.
+   *
+   * Deliberately still fire-and-forget — matching `message.post` rather than inventing an ack for
+   * one frame — but failures are logged loudly instead of vanishing.
+   */
+  function handleNodeHandoffCreate(conn, payload) {
+    const {
+      from_seat_id: fromSeatId, to_seat_id: toSeatId, body, evidence_refs: evidenceRefs,
+    } = payload ?? {};
+    if (!fromSeatId || !toSeatId || typeof body !== 'string') {
+      log.warn('node.handoff.create.malformed', { reason: 'missing seat ids or body' });
+      return;
+    }
+    const from = store.getSeat(fromSeatId);
+    if (!from) { log.warn('node.handoff.create.unknown_seat', { seat_id: fromSeatId }); return; }
+    // Same boundary as every other node-authored action: a node may only act as its own seats.
+    if (from.node_id !== conn.meta?.nodeId) {
+      log.warn('node.handoff.create.forbidden', { seat_id: fromSeatId });
+      return;
+    }
+    try {
+      const { handoff } = store.createHandoff({
+        roomId: from.room_id,
+        fromSeatId,
+        toSeatId,
+        summary: body,
+        evidence: { refs: Array.isArray(evidenceRefs) ? evidenceRefs : [] },
+      });
+      log.info('handoff.created', {
+        handoff_id: handoff.id, from_seat_id: fromSeatId, to_seat_id: toSeatId,
+      });
+      // The handoff queues a delivery for the target seat; flush so it wakes now rather than on
+      // the next dispatch tick.
+      api.flushDeliveries();
+    } catch (err) {
+      log.error('node.handoff.create.failed', { err: String(err), from_seat_id: fromSeatId });
+    }
+  }
 
   /**
    * Answer a node's read request with exactly one `query.result`.

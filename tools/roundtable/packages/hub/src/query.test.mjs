@@ -171,6 +171,70 @@ test('an unknown room is refused with the same error as an unauthorised one', as
   assert.equal(res.error, 'room_not_accessible');
 });
 
+test('node.handoff.create actually writes a handoff', async (t) => {
+  // Regression: this frame was in the wire vocabulary and the node sent it, but the hub consumed
+  // it nowhere — it decoded, matched no branch, and was dropped. Because the node resolves its
+  // caller as soon as the frame is written, the agent was told the handoff succeeded while no row
+  // was ever written. Caught by reading the production database after a live handoff said "ok".
+  const { store, hub, room, token, node, seat } = fixture();
+  const addr = await hub.listen(0);
+  t.after(async () => { await hub.close(); store.close(); });
+
+  const target = store.createSeat({
+    roomId: room.id, nodeId: node.id, alias: 'builder', provider: 'codex', sessionRef: 's2',
+  });
+  const { ws } = await connectNode(addr.port, node.id, token);
+  t.after(() => closeClient(ws));
+
+  ws.send(envelope(NodeFrame.HANDOFF_CREATE, {
+    handoff_create: {
+      request_id: crypto.randomUUID(),
+      from_seat_id: seat.id,
+      to_seat_id: target.id,
+      body: 'over to you',
+      evidence_refs: ['ref-1'],
+      request_payload_sha256: '',
+    },
+  }));
+
+  // Fire-and-forget: no ack frame to await, so poll the store briefly.
+  let handoffs = [];
+  for (let i = 0; i < 40 && handoffs.length === 0; i += 1) {
+    await new Promise((r) => setTimeout(r, 25));
+    handoffs = store.listHandoffs(room.id);
+  }
+  assert.equal(handoffs.length, 1, 'the handoff must be persisted, not silently dropped');
+  assert.equal(handoffs[0].from_seat_id, seat.id);
+  assert.equal(handoffs[0].to_seat_id, target.id);
+});
+
+test('a node cannot hand off from a seat it does not own', async (t) => {
+  const { store, hub, room, token, node, seat } = fixture();
+  const addr = await hub.listen(0);
+  t.after(async () => { await hub.close(); store.close(); });
+
+  const otherNode = store.registerNode({ name: 'other', tokenHash: Store.hashNodeToken('t2') });
+  const foreign = store.createSeat({
+    roomId: room.id, nodeId: otherNode.id, alias: 'foreign', provider: 'codex', sessionRef: 's3',
+  });
+  const { ws } = await connectNode(addr.port, node.id, token);
+  t.after(() => closeClient(ws));
+
+  ws.send(envelope(NodeFrame.HANDOFF_CREATE, {
+    handoff_create: {
+      request_id: crypto.randomUUID(),
+      from_seat_id: foreign.id, // not this node's seat
+      to_seat_id: seat.id,
+      body: 'should be refused',
+      evidence_refs: [],
+      request_payload_sha256: '',
+    },
+  }));
+
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(store.listHandoffs(room.id), [], 'a node may only act as its own seats');
+});
+
 test('an unknown query kind still gets a reply', async (t) => {
   // A node that never hears back leaves an MCP tool call hanging inside a live Claude session.
   const { store, hub, room, token, node } = fixture();
