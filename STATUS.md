@@ -7,26 +7,42 @@ wins. Regenerate or correct them; do not resolve the conflict in their favour.
 - **Repository:** `github.com/Orthic-Labs/roundtable` — the canonical home. This tree previously
   sat inside the `bogusyogi/claude` workspace with no `.git` of its own; it is now a proper
   checkout of this remote. Roundtable work happens here, not in the workspace repo.
-- **Measured:** 2026-07-25, clean checkout of `main`.
-- **Method:** `cargo test --workspace --no-fail-fast` from `main`. Static inspection for anything
-  not covered by a test.
+- **Measured:** 2026-07-26, clean checkout of `main`.
+- **Method:** `cargo test --workspace` and `node --test src/*.test.mjs` from `main`, plus a real
+  deployment driving a real `codex app-server`. Static inspection for anything not covered.
 - **Branch policy:** `main` is the **only** branch, locally and on the remote. All prior branch
   work has been absorbed into it (below). Do not create branches or worktrees.
 
 ## Bottom line
 
-**67 cargo tests, 0 failures. 73 Node hub tests, 0 failures** (a 10th file,
-`e2e-rust-node.test.mjs`, is excluded from that count — see below). Every crate carries a real
-implementation. The hub, store, protocol, and PWA work that previously lived only on unmerged
-branches has been absorbed into `main`.
+**DEPLOYED AND WORKING.** The hub runs on Hetzner under pm2, the Mac node runs under launchd, and
+a message posted to a room reaches a **real `codex app-server`** and comes back as the agent's real
+reply. Verified live on 2026-07-26 by posting "Say exactly: THIRD" and reading `THIRD` back out of
+the production database.
 
-**A message posted in a room now genuinely reaches Codex and comes back as a reply carrying real
-agent content** — the real compiled `roundtable-node` binary, the real Node hub, and the real
-Codex App Server fixture, proven end-to-end, with the reply text itself (`"echo: say hello"`) now
-asserted rather than just a synthetic status ping. See "Node↔Codex seat routing" below for the
-five real wire-protocol bugs from 2026-07-25 plus the two more found 2026-07-26 by generating the
-real protocol schema, and for the one known, separate test-runner quirk that remains undiagnosed
-(not a protocol defect).
+**71 cargo tests, 0 failures. 100 Node hub tests, 0 failures** when run per-file or in small
+batches. `dispatch.test.mjs` now passes all 11 of its tests and exits cleanly — previously only its
+first 3 ever ran. The full 12-file single-command run is still flaky; see "The test-runner hang"
+below for exactly what is and is not fixed.
+
+The one thing NOT live: the nginx vhost, so `roundtable.spoares.com` still falls through to the
+default server. The conf and its Dockerfile COPY are staged; the rebuild needs Adrian's sudo
+(`vendure` is not in the `docker` group). Until then the node reaches the hub over an SSH tunnel.
+
+## Deployed state (2026-07-26)
+
+| Piece | Where | State |
+|---|---|---|
+| Hub | Hetzner, pm2 `roundtable-hub`, `172.22.0.1:8460` | running, restart-safe, `pm2 save`d |
+| Database | `~/.local/share/roundtable/roundtable.sqlite3` | WAL, migration guarded by `user_version` |
+| Backups | `~/backups/roundtable`, cron 04:15 daily | verified: real backup taken, contents confirmed |
+| PWA | built on the Mac, rsynced to the box | served by the hub at `/` |
+| Node (Mac) | launchd `com.orthiclabs.roundtable-node` | running, auto-starts at login |
+| Codex | `/opt/homebrew/bin/codex app-server` | real, answering |
+| nginx vhost | staged, not built | **needs Adrian's sudo** |
+
+Enrolment is `ops/enrol-node.mjs` (node / room / seat / list) — deliberately a box-side CLI, not an
+HTTP route, because it mints credentials.
 
 ## Measured test counts on `main`
 
@@ -35,10 +51,89 @@ real protocol schema, and for the one known, separate test-runner quirk that rem
 | `roundtable-protocol` | 5 | real — locked v1 types, canonical JSON |
 | `roundtable-store` | 9 | real — 66KB implementation over the 11-table schema |
 | `roundtable-hub` | 24 | real — axum: auth, http, router, state, ws + 4 integration suites |
-| `roundtable-node` | 29 | real — Codex JSONL adapter (response correlation + execute(), real Turn/UserInput/agentMessage shapes), WS client w/ reconnect, IPC, keyring |
-| **cargo total** | **67** | **0 failures** |
-| `packages/web` | **10** | real PWA — builds (24 modules, 205KB) and serves from the hub |
-| `packages/claude-channel` | — | real — 7 `roundtable_*` MCP tools, Zod schemas |
+| `roundtable-node` | 33 | real — Codex adapter against the REAL generated schema, WS client w/ reconnect, IPC, keyring |
+| **cargo total** | **71** | **0 failures** |
+| `packages/hub` | **100** | green per-file and in small batches; the full 12-file run is still flaky |
+| `packages/web` | 10 | real PWA — builds (24 modules, 205KB) and serves from the hub |
+| `packages/claude-channel` | 2 | builds; IPC unit tests only — the node does NOT route Claude seats yet |
+
+## What real Codex found that the fixture never could
+
+Pointing the node at a real `codex app-server` for the first time immediately found three bugs that
+every green test had missed, because the fixture was internally consistent with the same wrong
+assumptions:
+
+1. **A stderr deadlock.** The child's stderr was piped and never read. A piped stream nobody drains
+   fills its ~64KB kernel buffer and blocks the child forever on its next write. Real Codex starts
+   several MCP servers and logs plenty: the handshake succeeded and then `thread/start` hung until
+   it timed out, with no error anywhere. The fixture logs nothing, so no test could have caught it.
+2. **`initialize` was missing `clientInfo.version`**, which `ClientInfo` requires. Real Codex
+   rejects the handshake outright. The fixture accepted the short form.
+3. **`active_turn_id` was never cleared on turn completion**, so the SECOND message to any seat took
+   the steer path and real Codex rejected it with "no active turn to steer" — every follow-up
+   message to a seat was silently lost.
+
+And three more found by deploying rather than by testing:
+
+4. **`flushDeliveries()` was only ever called by tests.** A deployed hub accepted messages and
+   dispatched nothing, forever. There is now a real dispatch loop plus an immediate flush on node
+   connect.
+5. **The migration re-ran on every open**, so the hub started once on a fresh database and died on
+   its first restart. Guarded by `user_version`, with an adoption path for databases written before
+   the guard existed.
+6. **Node tokens were never verified.** The hub checked only that the `node_id` existed, so anyone
+   knowing a UUID could receive that node's deliveries — each carrying a room transcript — and post
+   as its seats. Revoked nodes were admitted too. Found before the vhost went live, so it was never
+   reachable from the internet.
+7. **A stale connection swallowed deliveries.** Nothing enforced one connection per node, and
+   `dispatch()` sends to the first match and reports success. After a dropped tunnel the hub held a
+   dead socket alongside the live one and fed it every delivery. Two posted messages vanished —
+   marked `sent`, never received, no error. A completing hello now supersedes any earlier
+   connection for that node.
+
+## The test-runner hang — root-caused and largely fixed, NOT fully
+
+Two real defects were found and fixed (this file previously called the whole thing environmental,
+which was wrong):
+
+- **The hub could not shut down.** `close()` sent WebSocket close frames and called
+  `server.close()`, which stops accepting and then WAITS for every existing connection to end — and
+  a WebSocket holds its socket open by design. A production defect too: SIGTERM hung identically.
+  Fixed with `closeAllConnections()`.
+- **A race in `dispatch.test.mjs`'s helper.** It awaited `hello.accepted`, then awaited the next
+  frame with a fresh `once()`; on reconnect the hub sends both in the same tick, so the second was
+  lost and the test waited forever for a message already delivered. The helper now collects frames
+  from socket open and exposes `waitFor(type)`.
+
+**Measured result — stated precisely, because an earlier draft of this file overclaimed it:**
+
+- `dispatch.test.mjs` alone: **11/11, exits cleanly.** Previously only its first 3 tests ever ran.
+  That is a genuine fix to the specific problem this repo had documented.
+- Small batches (5 files, 43 tests) pass and exit cleanly.
+- **The full 12-file suite is still flaky.** It completed 100/100 once, then hung on later runs at
+  ~42-43 tests. The hang happens AFTER tests report, so it is a lingering handle keeping the
+  process alive, not a stuck test. `e2e-rust-node.test.mjs` is implicated (it spawns a real binary;
+  removing it made an 11-file batch pass once), but that is not conclusive — the 11-file batch has
+  also hung. Not root-caused.
+
+**Practical guidance:** run files in small batches, or individually. Every file passes on its own.
+Do not reinstate the old "run dispatch.test.mjs first" advice — that diagnosis was wrong.
+
+## Decisions
+
+- **The Rust hub (`crates/roundtable-hub`) stays, as reference only.** The Node hub is what is
+  deployed. Deleting the Rust one now would be premature: `crates/roundtable-store`'s migration IS
+  the schema contract the Node hub loads at runtime, so that crate cannot go, and the Rust hub's 24
+  integration tests encode the protocol contract the Node port is checked against. The Node hub is
+  days old and this week alone found seven defects in it. Revisit after ~30 days of stable
+  operation; until then the cost is a compile, not a risk.
+- **`tool/requestUserInput` does not exist** in this Codex protocol version — verified absent from
+  the full generated schema. The architecture doc's reference to it predates this App Server.
+  Approvals run through a Guardian auto-review instead (`item/autoApprovalReview/*` plus
+  `thread/approveGuardianDeniedAction` as the human override), which is what is implemented.
+- **npm works on this Mac after all** (`packages/claude-channel` installed 99 packages cleanly on
+  2026-07-26). The "npm fails on certificate trust" note in older docs is stale for this path. The
+  Node hub stays dependency-free regardless — that is now a deliberate property, not a workaround.
 
 ## Absorbed branch work (branches now deleted)
 
@@ -259,19 +354,21 @@ widened to match.
   source files that only now exist, and calls `roundtable-node` an "empty placeholder" when it is
   a 1,409-line crate. Regenerate it before trusting it.
 
-## Deployment is NOT ready (Task 11)
+## Deployment — DONE (Task 11), except nginx
 
-Task 11 is gated by the architecture as production mutation requiring an explicit `DEPLOY TASK 11`
-dispatch. Independently of that gate, there is nothing deployable yet:
+Superseded the "Deployment is NOT ready" section this file carried until 2026-07-26. Everything
+below is live and verified, not written-and-untested.
 
 | Required by spec | Reality |
 |---|---|
-| `ops/nginx-roundtable.conf` | **written** — includes the Dockerfile `COPY` check that must pass before any rebuild |
-| `ops/ecosystem.config.cjs` | **written** — pm2, replacing the systemd unit; the box runs 15 other Node services this way |
-| `ops/backup.sh` | **written and smoke-tested** — `.backup` + `integrity_check` + sha256, single self-contained artifact |
-| `ops/install-macos.sh`, `ops/install-windows.ps1` | missing — these install the *node* agent, not the hub |
-| Serving the PWA | **done** — hub serves the built PWA; index no-store, hashed assets immutable, SPA fallback |
-| Build location | **moot for the Node hub** — nothing to compile. `git pull` + `pm2 restart`. |
+| `ops/nginx-roundtable.conf` | written and STAGED on the box as `~/sites/nginx/roundtable.conf`; the Dockerfile `COPY` line and rebuild need Adrian's sudo |
+| `ops/ecosystem.config.cjs` | **live** — pm2 `roundtable-hub`, `pm2 save`d, survives restart |
+| `ops/backup.sh` | **live** — cron 04:15; rewritten to use `node:sqlite`'s native `backup()` because the sqlite3 CLI is NOT installed on the box and installing it needs sudo. Verified: real backup taken, contents read back |
+| `ops/install-macos.sh` | **written and used** — builds, writes 0600 config/token, registers a launchd agent. The Mac node is running under it |
+| `ops/install-windows.ps1` | still missing — Windows not started |
+| `ops/enrol-node.mjs` | new — node/room/seat enrolment, box-side CLI rather than an HTTP route because it mints credentials |
+| Serving the PWA | **live** — built on the Mac, rsynced, served by the hub |
+| Build location | **no builds on the box**, as required. Node hub compiles nothing; the PWA is built on the Mac and shipped |
 
 On 2026-07-25 a deploy was attempted before checking any of this: a Rust toolchain was installed on
 the production box and a release build started, against a box running 17 live pm2 services. Both
@@ -362,14 +459,29 @@ box already runs.
 
 ## Genuinely-absent spec items
 
-Verified still absent:
+Closed on 2026-07-26:
 
-- Hub adoption of `rightkit-logs`
-- `MessageKind::SeatInterrupt` + interrupt handler
-- `ApprovalResolution::AfterCancel` + cancel-while-waiting-approval flow
-- `DeliveryRecord.no_rollback` enforcement
-- `tools/roundtable/ops/observability.md` (`ops/` is an empty directory; Task 11 not started)
-- End-to-end acceptance (Task 12)
+- ~~`MessageKind::SeatInterrupt` + interrupt handler~~ — `seat.interrupt` is wired end to end: the
+  hub's cancel route posts it, the node translates it to Codex `turn/interrupt`.
+- ~~`ApprovalResolution::AfterCancel` + cancel-while-waiting-approval~~ — implemented; a late
+  answer records `approval_resolved_after_cancel` and posts a stale-approval system message.
+- ~~`DeliveryRecord.no_rollback` enforcement~~ — enforced by never retracting recorded work, held
+  by a test that asserts prior output survives a cancel.
+- ~~`ops/observability.md`~~ — written, with a real structured logger behind it.
+- ~~End-to-end acceptance (Task 12)~~ — done against real Codex through the deployed hub.
+
+Still absent:
+
+- **Hub adoption of `rightkit-logs`** — `packages/hub/src/log.mjs` is schema-compatible with it but
+  is a local zero-dependency implementation. The hub deliberately has no npm dependencies.
+- **Claude seats are not routed.** `packages/claude-channel` builds and its IPC unit tests pass,
+  but `main.rs` still logs a Claude-provider delivery as explicitly unhandled. Only Codex seats work.
+- **Windows node** — no installer, never built or run on Windows.
+- **The node never advances its own replay cursor.** It echoes back whatever the handshake gave it,
+  so it always reconnects at 0. Harmless now that the hub refuses to replay terminal deliveries,
+  but the cursor is still not doing its job.
+- **`item/agentMessage/delta` and most `ThreadItem` variants** are not surfaced (reasoning,
+  streaming). Commands, file edits, tool calls, searches and plans are.
 
 ## Build environment notes
 
@@ -387,7 +499,7 @@ Verified still absent:
 
 ## Next action
 
-Stage 0 of [`2026-07-25-roundtable-synthesis-three-rings.md`](./2026-07-25-roundtable-synthesis-three-rings.md)
-is complete: the repository is reconciled, single-branch, and every implementation is on `main`.
-The next engineering step is the node↔hub wire alignment above, which is also the natural first
-slice of Phase 1 (instrumenting one orchestrator→executor edge).
+1. **nginx** — Adrian's sudo, one command (see HANDOVER.md). Until then the node reaches the hub
+   over an SSH tunnel rather than `wss://roundtable.spoares.com`.
+2. Route Claude seats through `packages/claude-channel` so the room is genuinely multi-party.
+3. Windows node installer.

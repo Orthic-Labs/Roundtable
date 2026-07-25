@@ -2,7 +2,101 @@
 
 All notable changes to this repo. Categories follow [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] — real agent content relaying, grounded in the real protocol schema, 2026-07-26
+## [Unreleased] — deployed, and answering from real Codex, 2026-07-26
+
+Roundtable is live: the hub runs on Hetzner under pm2, the Mac node runs under launchd, and a
+message posted to a room reaches a real `codex app-server` and comes back as the agent's reply.
+Verified by posting "Say exactly: THIRD" and reading `THIRD` back out of the production database.
+
+Only nginx is outstanding — the vhost is staged on the box but the rebuild needs sudo, so
+`roundtable.spoares.com` still falls through to the default server.
+
+### Added
+
+- **`ops/enrol-node.mjs`** — node/room/seat enrolment. Deliberately a box-side CLI rather than an
+  HTTP route: it mints credentials, and a credential-minting endpoint on the internet is a far
+  larger target than a command requiring shell access.
+- **`ops/install-macos.sh`** — builds the release binary, writes 0600 config + token, registers a
+  launchd agent (RunAtLoad + KeepAlive). Idempotent. Resolves `codex`'s absolute path at install
+  time because a launchd agent does not inherit an interactive shell's PATH.
+- **`ops/observability.md`** and **`packages/hub/src/log.mjs`** — structured JSON-lines logging
+  with a documented field schema, redaction list, sampling decision, and an on-call runbook.
+- **`ROUNDTABLE_NODE_TOKEN_FILE`** / **`ROUND_TABLE_ADMIN_TOKEN_FILE`** — secrets live in 0600
+  files instead of the environment (which a spawned Codex would inherit) or the working directory.
+- **Cancellation contract**, clause by clause: `POST /api/deliveries/:id/cancel`, `seat.interrupt`
+  wired through to Codex `turn/interrupt`, approvals killed on cancel with a late answer recorded
+  as `approval_resolved_after_cancel`, and a typed audit message naming who/what/why.
+- **A real dispatch loop.** See below — there wasn't one.
+
+### Fixed — six defects a green test suite could not see
+
+Found within minutes of an actual deployment and a real Codex process:
+
+1. **The hub dispatched nothing.** `flushDeliveries()` was called only by tests. A deployed hub
+   accepted messages, wrote deliveries, and pushed them to no one, forever.
+2. **The hub could not restart.** The migration re-ran on every open, so it started once on a fresh
+   database and then died with "table rooms already exists". Guarded by `user_version`, plus an
+   adoption path for databases written before the guard existed.
+3. **Node tokens were never verified.** The hub checked only that a `node_id` existed, so anyone
+   knowing a UUID could receive that node's deliveries — each carrying a room transcript — and post
+   as its seats. Revoked nodes were admitted too. Caught before the vhost went live.
+4. **A stale connection swallowed deliveries.** Nothing enforced one connection per node, and
+   `dispatch()` sends to the first match and reports success. After a dropped tunnel the hub fed a
+   dead socket every delivery; two messages vanished with no error.
+5. **A stderr deadlock.** The node piped Codex's stderr and never read it; a full 64KB pipe buffer
+   blocks the child forever. Presented as "handshake succeeds, then `thread/start` hangs".
+6. **`initialize` was missing `clientInfo.version`**, which real Codex requires — and
+   **`active_turn_id` was never cleared**, so every second message to a seat was rejected with "no
+   active turn to steer" and silently lost.
+
+### Fixed — the "test-runner quirk" was two real bugs
+
+This repo documented for weeks that `dispatch.test.mjs` hung `node --test` unless run first, called
+it environmental, and told readers to run it alone. Wrong on both counts:
+
+- **`server.close()` waits for existing connections**, and a WebSocket holds its socket open by
+  design — so the hub could never finish shutting down. A production defect too: SIGTERM hung
+  identically. Fixed with `closeAllConnections()`.
+- **The test helper raced.** It awaited `hello.accepted`, then awaited the next frame with a fresh
+  `once()`; on reconnect the hub sends both in the same tick, so the second was lost and the test
+  waited forever for a message already delivered.
+
+`dispatch.test.mjs` now passes all 11 of its tests and exits cleanly, where only its first 3 ever
+ran. Small batches pass. **The full 12-file run remains flaky** — it completed 100/100 once, then
+hung at ~42 on later runs, always after the tests report (a lingering handle, not a stuck test).
+Not root-caused; run files individually or in small batches.
+
+### Changed
+
+- `ops/backup.sh` uses `node:sqlite`'s native `backup()` instead of the sqlite3 CLI, which is not
+  installed on the box and would need sudo. Verified end to end: real backup taken, contents read
+  back.
+- Data and backups moved under `~` from root-owned `/var/lib` and `/var/backups`.
+- Delivery replay now honours recovery rule 8 — a terminal delivery is never reinjected. The node
+  always reconnects at cursor 0, so the hub was re-running every finished delivery on each
+  reconnect.
+
+### Decided
+
+- **The Rust hub stays, as reference only.** `roundtable-store`'s migration is the schema contract
+  the Node hub loads at runtime, and the Rust hub's 24 integration tests encode the protocol the
+  Node port is checked against. The Node hub is days old and this week found seven defects in it.
+  Revisit after ~30 days of stable operation.
+- **There is no magic approval phrase.** The architecture doc's `DEPLOY TASK 11` gate is retired:
+  Adrian's stated intent is the approval, and a phrase in a doc never outranks what he says.
+
+### Known limitations
+
+- **Claude seats are not routed.** `packages/claude-channel` builds and its IPC tests pass, but
+  `main.rs` still logs a Claude delivery as explicitly unhandled. Codex only — so "multi-party
+  rooms" is currently one party.
+- No Windows installer; never built or run on Windows.
+- The node never advances its own replay cursor.
+- Streaming deltas and several `ThreadItem` variants are not surfaced.
+- `@rightkit/logs` is not adopted; `log.mjs` is schema-compatible but local, keeping the hub
+  dependency-free.
+
+### Earlier the same day — real agent content relaying, grounded in the real protocol schema
 
 Full detail in `STATUS.md`'s "Node↔Codex seat routing" section; narrative in `HANDOVER.md`.
 

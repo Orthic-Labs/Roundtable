@@ -12,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -77,7 +78,14 @@ test('E2E: the real compiled roundtable-node binary delivers a message to Codex 
   // never draining — which is exactly what happened once (a failed assertion produced one line
   // of output and then the whole `node --test` invocation hung indefinitely).
   t.after(async () => {
-    nodeProc.kill();
+    // SIGKILL and WAIT. `kill()` sends SIGTERM and returns immediately; roundtable-node sits in a
+    // select! loop and does not necessarily exit promptly, and its piped stdout/stderr keep handles
+    // open in THIS process. `node --test` then finishes every test and hangs forever with nothing
+    // left to report — indistinguishable from a stuck test, which is how it was misread for weeks.
+    nodeProc.kill('SIGKILL');
+    await once(nodeProc, 'exit');
+    nodeProc.stdout.destroy();
+    nodeProc.stderr.destroy();
     await hub.close();
   });
 
