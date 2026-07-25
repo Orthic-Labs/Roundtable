@@ -174,11 +174,38 @@ test('oversized bodies are rejected rather than buffered', async () => {
   });
 });
 
-test('E2E: a node connects over WebSocket and the hub tracks it', async () => {
+test('E2E: a node connects over WebSocket and the hub tracks it after node.hello', async () => {
+  await withHub(async (base, hub) => {
+    // The hub only counts a node connection once its hello.accepted handshake is complete
+    // (see server.mjs's attachWebSocket) — a bare WS upgrade with no node.hello is not "a node
+    // connected" from the hub's point of view, so this test registers a real node and sends the
+    // handshake the real roundtable-node binary sends, rather than asserting on a raw upgrade.
+    const node = hub.store.registerNode({ name: 'mac', tokenHash: 'h' });
+    const client = new WebSocket(`${base.replace('http', 'ws')}/node/connect`);
+    await once(client, 'open');
+    client.send(JSON.stringify({
+      version: 1, event_id: crypto.randomUUID(), sent_at_ms: Date.now(), type: 'node.hello',
+      // Wrapped under "hello": HubCommand::Hello(HelloFrame) is a tuple variant, so serde's
+      // default externally-tagged representation nests its fields one level deeper.
+      payload: {
+        hello: {
+          node_id: node.id, token: 'unused-by-this-hub', hostname: 'mac', os: 'macos',
+          version: '0.1.0', resume_cursor: 0,
+        },
+      },
+    }));
+    const [evt] = await once(client, 'message');
+    assert.equal(JSON.parse(evt.data).type, 'hello.accepted');
+    assert.equal(hub.connectionCount, 1);
+    client.close();
+  });
+});
+
+test('E2E: a bare WebSocket upgrade with no node.hello is not counted as a connected node', async () => {
   await withHub(async (base, hub) => {
     const client = new WebSocket(`${base.replace('http', 'ws')}/node/connect`);
     await once(client, 'open');
-    assert.equal(hub.connectionCount, 1);
+    assert.equal(hub.connectionCount, 0, 'connectionCount only increments after node.hello succeeds');
     client.close();
   });
 });

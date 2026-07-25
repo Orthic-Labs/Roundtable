@@ -2,6 +2,15 @@
 //
 // The end-to-end path: a message mentioning a seat produces a delivery, the delivery reaches the
 // node that owns that seat over a real WebSocket, and the node's ack closes it out.
+//
+// Frame shapes here match roundtable-node's REAL serialization, not a hand-guessed one. Every
+// HubCommand variant (Hello, DeliveryAck, MessagePost, ...) is a Rust enum with
+// `#[serde(rename_all = "snake_case")]` and no explicit tag/content attribute, so serde's default
+// externally-tagged representation wraps each variant's fields one level deeper under its own
+// snake_case name — e.g. `{"hello": {node_id, token, ...}}`, not `{node_id, token, ...}` flat.
+// This was discovered by e2e-rust-node.test.mjs spawning the real compiled binary: every test
+// here previously used a flat, self-consistent-but-wrong shape that no test caught because both
+// the fake sender and the (also wrong) hub-side reader agreed with each other, never with Rust.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,10 +37,30 @@ const nodeFrame = (type, payload = {}) => JSON.stringify({
   version: PROTOCOL_VERSION, event_id: crypto.randomUUID(), sent_at_ms: Date.now(), type, payload,
 });
 
+/**
+ * Connects a fake node the way the REAL roundtable-node binary does
+ * (crates/roundtable-node/src/hub.rs::connect_and_drive): open the socket, send node.hello
+ * FIRST — there is no `?node_id=` query string on the real client's URL — then read exactly one
+ * frame back and require it to be hello.accepted.
+ */
+async function connectAsNode(wsBase, nodeId, { resumeCursor = 0 } = {}) {
+  const client = new WebSocket(`${wsBase}/node/connect`);
+  await once(client, 'open');
+  client.send(nodeFrame(NodeFrame.HELLO, {
+    hello: {
+      node_id: nodeId, token: 'unused-by-this-hub', hostname: 'mac', os: 'macos',
+      version: '0.1.0', resume_cursor: resumeCursor,
+    },
+  }));
+  const [evt] = await once(client, 'message');
+  const frame = JSON.parse(evt.data);
+  assert.equal(frame.type, 'hello.accepted');
+  return client;
+}
+
 test('E2E: a mention reaches the connected node as a delivery.assign frame', async () => {
   await withHub(async ({ hub, store, room, node, seat, wsBase }) => {
-    const client = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
-    await once(client, 'open');
+    const client = await connectAsNode(wsBase, node.id);
 
     store.postMessage({
       roomId: room.id, actorId: 'adrian', body: 'run the suite', mentionSeatIds: [seat.id],
@@ -44,16 +73,23 @@ test('E2E: a mention reaches the connected node as a delivery.assign frame', asy
     const frame = JSON.parse(evt.data);
     assert.equal(frame.type, 'delivery.assign');
     assert.equal(frame.version, PROTOCOL_VERSION);
-    assert.equal(frame.payload.message.body, 'run the suite');
-    assert.ok(frame.payload.cursor > 0, 'the frame carries a replay cursor');
+    // Wrapped under delivery_assign: matches roundtable-node's HubEvent::DeliveryAssign, an
+    // externally-tagged struct variant.
+    const inner = frame.payload.delivery_assign;
+    assert.equal(inner.message.body, 'run the suite');
+    assert.equal(inner.room_slug, 'r');
+    assert.equal(inner.room_title, 'R');
+    assert.deepEqual(inner.context_messages, [], 'first message in the room has no prior context');
+    assert.equal(inner.parent, null, 'not a reply');
+    assert.equal(inner.seats.length, 1);
+    assert.deepEqual(inner.message.mentioned_seat_ids, [seat.id]);
     client.close();
   });
 });
 
 test('E2E: the node acks and the delivery leaves the queue', async () => {
   await withHub(async ({ hub, store, room, node, seat, wsBase }) => {
-    const client = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
-    await once(client, 'open');
+    const client = await connectAsNode(wsBase, node.id);
 
     const { deliveries } = store.postMessage({
       roomId: room.id, actorId: 'adrian', body: 'x', mentionSeatIds: [seat.id],
@@ -62,7 +98,8 @@ test('E2E: the node acks and the delivery leaves the queue', async () => {
     hub.flushDeliveries();
     await received;
 
-    client.send(nodeFrame(NodeFrame.DELIVERY_ACK, { delivery_id: deliveries[0].id }));
+    // HubCommand::DeliveryAck { delivery_id } is a struct variant -> wrapped under delivery_ack.
+    client.send(nodeFrame(NodeFrame.DELIVERY_ACK, { delivery_ack: { delivery_id: deliveries[0].id } }));
     // Give the server a tick to process the inbound frame.
     await new Promise((r) => setTimeout(r, 50));
 
@@ -84,8 +121,7 @@ test('a delivery with no connected node stays queued rather than being lost', as
 test('E2E: a reconnecting node replays what it missed from its cursor', async () => {
   await withHub(async ({ hub, store, room, node, seat, wsBase }) => {
     // Deliver while connected, then drop.
-    const first = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
-    await once(first, 'open');
+    const first = await connectAsNode(wsBase, node.id);
     store.postMessage({ roomId: room.id, actorId: 'a', body: 'missed-me', mentionSeatIds: [seat.id] });
     const got = once(first, 'message');
     hub.flushDeliveries();
@@ -93,19 +129,43 @@ test('E2E: a reconnecting node replays what it missed from its cursor', async ()
     first.close();
     await new Promise((r) => setTimeout(r, 50));
 
-    // Reconnect from cursor 0 — everything addressed to this node replays.
-    const second = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}&cursor=0`);
-    const replayed = once(second, 'message');
-    await once(second, 'open');
-    const [evt] = await replayed;
-    assert.match(JSON.parse(evt.data).payload.message.body, /missed-me/);
+    // Reconnect from cursor 0 — everything addressed to this node replays, after its own
+    // hello.accepted (which every connection gets, replayed or not).
+    const second = await connectAsNode(wsBase, node.id, { resumeCursor: 0 });
+    const [evt] = await once(second, 'message');
+    assert.match(JSON.parse(evt.data).payload.delivery_assign.message.body, /missed-me/);
     second.close();
   });
 });
 
+test('a node.hello with an unregistered node_id is refused, not silently accepted', async () => {
+  await withHub(async ({ wsBase }) => {
+    const client = new WebSocket(`${wsBase}/node/connect`);
+    await once(client, 'open');
+    client.send(nodeFrame(NodeFrame.HELLO, {
+      hello: {
+        node_id: crypto.randomUUID(), token: 'x', hostname: 'mac', os: 'macos',
+        version: '0.1.0', resume_cursor: 0,
+      },
+    }));
+    const [evt] = await once(client, 'close');
+    assert.equal(evt.code, 1008);
+  });
+});
+
+test('any frame before node.hello is refused, not treated as the handshake', async () => {
+  await withHub(async ({ wsBase }) => {
+    const client = new WebSocket(`${wsBase}/node/connect`);
+    await once(client, 'open');
+    client.send(nodeFrame(NodeFrame.PONG, {}));
+    const [evt] = await once(client, 'close');
+    assert.equal(evt.code, 1003);
+  });
+});
+
 test('a malformed frame from a node closes the connection rather than being ignored', async () => {
-  await withHub(async ({ node, wsBase }) => {
-    const client = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
+  await withHub(async ({ wsBase }) => {
+    const client = new WebSocket(`${wsBase}/node/connect`);
     await once(client, 'open');
     client.send('not json at all');
     const [evt] = await once(client, 'close');
@@ -120,13 +180,14 @@ test('a malformed frame from a node closes the connection rather than being igno
 
 test('E2E: a seat reply from the node is persisted and readable back over HTTP', async () => {
   await withHub(async ({ store, room, node, seat, wsBase }) => {
-    const client = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
-    await once(client, 'open');
+    const client = await connectAsNode(wsBase, node.id);
 
     client.send(nodeFrame(NodeFrame.MESSAGE_POST, {
-      request_id: crypto.randomUUID(), seat_id: seat.id, room_id: room.id,
-      message_kind: 'completion', body: 'done — 3 files changed', reply_to: null,
-      request_payload_sha256: 'sha-1',
+      message_post: {
+        request_id: crypto.randomUUID(), seat_id: seat.id, room_id: room.id,
+        message_kind: 'completion', body: 'done — 3 files changed', reply_to: null,
+        request_payload_sha256: 'sha-1',
+      },
     }));
     await new Promise((r) => setTimeout(r, 50));
 
@@ -142,12 +203,13 @@ test('E2E: a seat reply from the node is persisted and readable back over HTTP',
 
 test('a retried node.message.post (same request_id) is not persisted twice', async () => {
   await withHub(async ({ store, room, node, seat, wsBase }) => {
-    const client = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
-    await once(client, 'open');
+    const client = await connectAsNode(wsBase, node.id);
     const requestId = crypto.randomUUID();
     const send = () => client.send(nodeFrame(NodeFrame.MESSAGE_POST, {
-      request_id: requestId, seat_id: seat.id, room_id: room.id,
-      message_kind: 'chat', body: 'hello', reply_to: null, request_payload_sha256: 'sha-same',
+      message_post: {
+        request_id: requestId, seat_id: seat.id, room_id: room.id,
+        message_kind: 'chat', body: 'hello', reply_to: null, request_payload_sha256: 'sha-same',
+      },
     }));
     send();
     await new Promise((r) => setTimeout(r, 50));
@@ -165,13 +227,14 @@ test('a node.message.post naming a seat from a different room is dropped, not mi
     const otherSeat = store.createSeat({
       roomId: otherRoom.id, nodeId: node.id, alias: 'wrong-room-seat', provider: 'claude', sessionRef: 's2',
     });
-    const client = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
-    await once(client, 'open');
+    const client = await connectAsNode(wsBase, node.id);
 
     // seat_id is real, but for otherRoom — the frame claims room.id instead.
     client.send(nodeFrame(NodeFrame.MESSAGE_POST, {
-      request_id: crypto.randomUUID(), seat_id: otherSeat.id, room_id: room.id,
-      message_kind: 'chat', body: 'should not land', reply_to: null, request_payload_sha256: 'sha-x',
+      message_post: {
+        request_id: crypto.randomUUID(), seat_id: otherSeat.id, room_id: room.id,
+        message_kind: 'chat', body: 'should not land', reply_to: null, request_payload_sha256: 'sha-x',
+      },
     }));
     await new Promise((r) => setTimeout(r, 50));
 
@@ -183,11 +246,12 @@ test('a node.message.post naming a seat from a different room is dropped, not mi
 
 test('a node.message.post for an unknown seat_id is dropped, not thrown', async () => {
   await withHub(async ({ store, room, node, wsBase }) => {
-    const client = new WebSocket(`${wsBase}/node/connect?node_id=${node.id}`);
-    await once(client, 'open');
+    const client = await connectAsNode(wsBase, node.id);
     client.send(nodeFrame(NodeFrame.MESSAGE_POST, {
-      request_id: crypto.randomUUID(), seat_id: crypto.randomUUID(), room_id: room.id,
-      message_kind: 'chat', body: 'ghost seat', reply_to: null, request_payload_sha256: 'sha-y',
+      message_post: {
+        request_id: crypto.randomUUID(), seat_id: crypto.randomUUID(), room_id: room.id,
+        message_kind: 'chat', body: 'ghost seat', reply_to: null, request_payload_sha256: 'sha-y',
+      },
     }));
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(store.listMessages(room.id).length, 0);

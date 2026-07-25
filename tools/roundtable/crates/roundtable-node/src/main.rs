@@ -1,15 +1,19 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use roundtable_node::{
+    codex::{CodexAdapter, CodexCommand, CodexEvent, CodexTurnStatus},
     config::NodeConfig,
-    hub::{HubClient, HubEvent, HubTransport, TcpHubChannel, WsHubChannel},
+    hub::{ClientCommand, HubClient, HubEvent, HubTransport, TcpHubChannel, WsHubChannel},
     secrets::BearerToken,
     state::NodeState,
     NodeError, NodeResult,
 };
+use roundtable_protocol::{MessageKind, SeatProvider};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,23 +61,153 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = HubClient::new(cfg.clone(), token.expose().to_string(), state, factory);
     tracing::info!(node_id = %cfg.node_id, hub = %cfg.hub_url, "roundtable-node connecting");
 
-    // Drain hub events for the life of the process. HubClient::new already spawned the driver,
-    // which owns reconnect and cursor replay; this loop keeps the binary alive and is where seat
-    // routing attaches next.
-    while let Some(event) = client.next_event().await {
-        match event {
-            HubEvent::HelloAccepted(accepted) => {
-                tracing::info!(
-                    seats = accepted.seat_tokens.len(),
-                    resume_cursor = accepted.resume_cursor,
-                    "hub accepted",
-                );
+    // One CodexAdapter for the process. connect() needs &mut self and is only called here, once,
+    // before anything shares it; execute()/subscribe()/seat() all take &self (their mutable state
+    // is behind internal Mutexes), so wrapping in Arc afterward is enough for the select! loop
+    // below to call them from multiple event arms without a lock around the adapter itself.
+    let mut codex = CodexAdapter::new(cfg.codex_command.clone(), cfg.codex_cwd.clone());
+    let mut codex_events = codex.subscribe().await;
+    if let Err(e) = codex.connect().await {
+        // Codex is optional infrastructure from the node's point of view — a hub connection with
+        // no local Codex available should still run (e.g. a Claude-only seat), so this does not
+        // exit the process. Every DeliveryAssign for a Codex seat will fail loudly instead.
+        tracing::warn!(error = %e, "codex app server did not start; codex seats will fail");
+    }
+    let codex = Arc::new(codex);
+
+    // CodexEvent (codex.rs) deliberately knows nothing about rooms — it is a generic App Server
+    // adapter. DeliveryAssign is where the room_id for a seat is actually known, so it is
+    // recorded here and looked up when a reply needs to be posted, rather than threading a
+    // Roundtable-specific field through an otherwise protocol-agnostic module.
+    let seat_rooms: Arc<Mutex<HashMap<Uuid, Uuid>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    // Drain hub events and Codex events concurrently for the life of the process. HubClient::new
+    // already spawned the driver, which owns reconnect and cursor replay.
+    loop {
+        tokio::select! {
+            hub_event = client.next_event() => {
+                let Some(event) = hub_event else {
+                    tracing::warn!("hub event stream ended; exiting");
+                    break;
+                };
+                handle_hub_event(event, &client, &codex, &seat_rooms).await;
             }
-            HubEvent::Ping { nonce } => tracing::debug!(%nonce, "ping"),
-            other => tracing::info!(?other, "hub event"),
+            codex_event = codex_events.recv() => {
+                match codex_event {
+                    Ok(event) => handle_codex_event(event, &client, &seat_rooms).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, "codex event channel lagged; some turn events were dropped");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // The adapter itself is never dropped (it's held in `codex` for the
+                        // process lifetime), so this arm is unreachable in practice; treated as
+                        // non-fatal rather than assumed impossible.
+                        tracing::warn!("codex event channel closed");
+                    }
+                }
+            }
         }
     }
 
-    tracing::warn!("hub event stream ended; exiting");
     Ok(())
+}
+
+/// Only `DeliveryAssign` for a Codex-provider seat is handled. Claude seats go through the
+/// Channel integration (`packages/claude-channel`), not this adapter — routing a Claude delivery
+/// here would be silently wrong, so it is logged as explicitly unhandled instead.
+/// `ApprovalResolve` and `SeatDetach` are not implemented; see STATUS.md.
+async fn handle_hub_event(
+    event: HubEvent,
+    client: &HubClient,
+    codex: &Arc<CodexAdapter>,
+    seat_rooms: &Arc<Mutex<HashMap<Uuid, Uuid>>>,
+) {
+    match event {
+        HubEvent::HelloAccepted(accepted) => {
+            tracing::info!(
+                seats = accepted.seat_tokens.len(),
+                resume_cursor = accepted.resume_cursor,
+                "hub accepted",
+            );
+        }
+        HubEvent::Ping { nonce } => tracing::debug!(%nonce, "ping"),
+        HubEvent::DeliveryAssign { delivery, message, seats, .. } => {
+            let Some(seat) = seats.iter().find(|s| s.id == delivery.seat_id) else {
+                tracing::warn!(seat_id = %delivery.seat_id, "delivery for a seat not in its own roster");
+                return;
+            };
+            if seat.provider != SeatProvider::Codex {
+                tracing::info!(
+                    seat_id = %seat.id, provider = ?seat.provider,
+                    "delivery for a non-Codex seat — not handled by this adapter",
+                );
+                return;
+            }
+            // Must happen before any reply is posted: PostMessage refuses an unowned seat_id.
+            client.register_seat(delivery.seat_id).await;
+            seat_rooms.lock().await.insert(delivery.seat_id, message.room_id);
+            dispatch_to_codex(delivery.seat_id, message.body, codex).await;
+        }
+        other => tracing::info!(?other, "hub event not yet handled"),
+    }
+}
+
+/// Picks CreateThread / StartTurn / SteerTurn based on what this node already knows about the
+/// seat, then sends it. Errors are logged, not propagated — a failed turn on one seat must not
+/// take down the node's connection to every other seat.
+async fn dispatch_to_codex(seat_id: uuid::Uuid, input: String, codex: &Arc<CodexAdapter>) {
+    let cmd = match codex.seat(seat_id).await {
+        None => CodexCommand::CreateThread { input, cwd: None },
+        Some(existing) if existing.active_turn_id.is_some() => CodexCommand::SteerTurn {
+            thread_id: existing.thread_id,
+            expected_turn_id: existing.active_turn_id.unwrap(),
+            input,
+        },
+        Some(existing) => CodexCommand::StartTurn { thread_id: existing.thread_id, input },
+    };
+    if let Err(e) = codex.execute(seat_id, cmd).await {
+        tracing::warn!(seat_id = %seat_id, error = %e, "codex command failed");
+    }
+}
+
+/// Posts a status message back into the room for any turn-lifecycle event with a seat_id — that
+/// is every event `notification_to_event` in codex.rs ever emits (see its doc comment).
+///
+/// The body is NOT the agent's real output: `CodexEvent::body` is always empty today, because
+/// App Server's actual text-delta shape isn't available (see codex.rs's module doc). This proves
+/// the round trip — hub delivery reaches Codex, Codex's own event reaches back to the hub — without
+/// pretending to relay content that was never extracted. Do not read a body from this and treat
+/// it as agent output.
+async fn handle_codex_event(
+    event: CodexEvent,
+    client: &HubClient,
+    seat_rooms: &Arc<Mutex<HashMap<Uuid, Uuid>>>,
+) {
+    let Some(room_id) = seat_rooms.lock().await.get(&event.seat_id).copied() else {
+        // A DeliveryAssign always records this before dispatch_to_codex runs, so this means an
+        // event arrived for a seat this node never received a delivery for. Drop rather than post
+        // with a placeholder room_id — the hub validates seat_id against room_id and would reject
+        // it anyway (see packages/hub/src/server.mjs's handleNodeMessagePost), so sending a wrong
+        // room_id would fail exactly the same way but less honestly.
+        tracing::warn!(seat_id = %event.seat_id, "codex event for a seat with no known room; dropping");
+        return;
+    };
+    let synthetic_body = format!(
+        "[roundtable-node] turn {status:?} (thread {thread})",
+        status = event.status, thread = event.thread_id,
+    );
+    let (response, _rx) = tokio::sync::oneshot::channel();
+    client.send(ClientCommand::PostMessage {
+        seat_id: event.seat_id,
+        room_id,
+        kind: match event.status {
+            CodexTurnStatus::Failed | CodexTurnStatus::WaitingApproval => MessageKind::System,
+            _ => MessageKind::Progress,
+        },
+        body: synthetic_body,
+        reply_to: None,
+        response,
+    }).await;
+    // actor_kind is not part of ClientCommand::PostMessage — the hub derives it server-side from
+    // seat_id (see handleNodeMessagePost's `actorKind: 'agent'`), so there is nothing to set here.
 }

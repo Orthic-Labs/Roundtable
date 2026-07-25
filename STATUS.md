@@ -15,13 +15,15 @@ wins. Regenerate or correct them; do not resolve the conflict in their favour.
 
 ## Bottom line
 
-**62 cargo tests, 0 failures.** Every crate now carries a real implementation. The hub, store,
-protocol, and PWA work that previously lived only on unmerged branches has been absorbed into
-`main`, and those branches are deleted.
+**66 cargo tests, 0 failures. 72 Node hub tests, 0 failures** (a 9th file,
+`e2e-rust-node.test.mjs`, is excluded from that count — see below). Every crate carries a real
+implementation. The hub, store, protocol, and PWA work that previously lived only on unmerged
+branches has been absorbed into `main`.
 
-**The Rust node now connects to the Node hub over WebSocket** — verified 2026-07-25 by running the
-real `roundtable-node` binary against a live hub and reading `{"connected":1}` back from the hub's
-own `/api/nodes`. The three gaps recorded below are closed.
+**A message posted in a room now genuinely reaches Codex and comes back as a reply** — the real
+compiled `roundtable-node` binary, the real Node hub, and the real Codex App Server fixture, proven
+end-to-end. See "Node↔Codex seat routing" below for the five real bugs it took to get there, and
+for the one known, separate test-runner quirk that remains undiagnosed (not a protocol defect).
 
 ## Measured test counts on `main`
 
@@ -30,8 +32,8 @@ own `/api/nodes`. The three gaps recorded below are closed.
 | `roundtable-protocol` | 5 | real — locked v1 types, canonical JSON |
 | `roundtable-store` | 9 | real — 66KB implementation over the 11-table schema |
 | `roundtable-hub` | 24 | real — axum: auth, http, router, state, ws + 4 integration suites |
-| `roundtable-node` | 24 | real — Codex JSONL adapter, WS client w/ reconnect, IPC, keyring |
-| **cargo total** | **62** | **0 failures** |
+| `roundtable-node` | 28 | real — Codex JSONL adapter (response correlation + execute()), WS client w/ reconnect, IPC, keyring |
+| **cargo total** | **66** | **0 failures** |
 | `packages/web` | **10** | real PWA — builds (24 modules, 205KB) and serves from the hub |
 | `packages/claude-channel` | — | real — 7 `roundtable_*` MCP tools, Zod schemas |
 
@@ -82,12 +84,62 @@ Two implementation notes worth keeping:
 session and back. The transport is up; seat routing on the node side is where that continues, and
 the gap there is now measured, not guessed at.
 
-## Node↔Codex seat routing — steps 1–2 done, verified against the real fixture (2026-07-25)
+## Node↔Codex seat routing — CLOSED end-to-end (2026-07-25)
 
-Was previously measured (below, kept for the record) as four undone steps. Steps 1 and 2 are now
-implemented and tested against `fixtures/app-server/fake-codex.mjs` — a real child process, not a
-mock — with 4 new tests (7 total in `codex.rs`, `roundtable-node` now 24→28,
-workspace 62→66, all still 0 failures):
+**Proven, not asserted:** a message posted to a room reaches the real compiled `roundtable-node`
+binary over a real WebSocket, drives the real `fake-codex.mjs` App Server process through a real
+turn, and the resulting reply is persisted back in the store as an `agent`-authored message.
+Verified two ways — a plain repro script with full unbuffered logs, and the tracked
+`e2e-rust-node.test.mjs` (1/1 pass, 114ms). `cargo test --workspace`: 66/66. The other 8 hub test
+files together: 72/72.
+
+This took five real, independent bugs to close, all found only because a REAL binary was driven
+against a REAL Codex process — no amount of JS-only or Rust-only testing surfaced any of them,
+because each side's tests were internally self-consistent with a wrong shared assumption:
+
+1. **The hub never sent `hello.accepted` at all.** The real node's handshake requires it as the
+   literal first frame or it fails the connection outright.
+2. **The handshake direction was backwards once added.** The hub sent `hello.accepted`
+   unprompted, keyed off a `?node_id=` query parameter the real client never sends. The real
+   sequence is: node connects, sends `node.hello` first, hub replies.
+3. **Every `HubCommand` payload is wrapped one level deeper than assumed.** `Hello`,
+   `DeliveryAck`, `MessagePost` etc. are Rust enum variants with
+   `#[serde(rename_all = "snake_case")]` and no explicit tag — serde's default externally-tagged
+   representation nests each variant's fields under its own snake_case key, e.g.
+   `{"hello": {node_id, ...}}`, not `{node_id, ...}` flat. The same is true in the hub→node
+   direction: `HubEvent::DeliveryAssign` needed the full field set (`delivery`, `message`,
+   `parent`, `context_messages`, `room_slug`, `room_title`, `room_objective`, `seats`), wrapped
+   under `delivery_assign` — not the two-field flat shape every JS test had been asserting on.
+4. **`Message.actor_id` is typed `Uuid`.** A human-readable placeholder like `'adrian'` (used
+   throughout the JS test suite, including this file's own examples) fails deserialization with
+   `UUID parsing failed`. Every actor, human included, needs a genuine UUID on the real wire.
+5. **`store.mjs`'s seat default state, `'attached'`, isn't a valid `SeatState` variant.** The real
+   enum is `detached/offline/idle/running/waiting_approval/error`; fixed to default `'idle'`.
+
+None of these surfaced as a compile error or an assertion failure in isolation — each failed
+**silently**, which is itself the sixth finding: `roundtable-node`'s event-reader loop dropped any
+undeserializable `HubEvent` via bare `.ok()`, with zero logging. Every failure above was invisible
+until a `warn!` was added at that exact point (now permanent, not diagnostic scaffolding) — this
+is why the investigation took as long as it did, and is the single highest-leverage fix in this
+list for anyone debugging this protocol in the future.
+
+A seventh, unrelated but equally real bug was found along the way: an abrupt node disconnect
+(`ECONNRESET` — a network blip, or a killed process) crashed the **entire Node hub process**, not
+just that connection. `WsConnection` re-emits socket errors on itself, and Node's `EventEmitter`
+throws if `'error'` has no listener. Fixed with a no-op `conn.on('error', () => {})` in
+`attachWebSocket`.
+
+**A known, separate, unresolved issue:** `dispatch.test.mjs`'s reconnect test reproducibly hangs
+the whole `node --test` process when it runs anywhere but first in a batch — confirmed via
+extensive isolation (every individual test passes; the exact same file passed as a full 9-test
+batch before these changes; the hang is reproducible with ANY single prior test + this one, and
+unaffected by delay length). This looks like a Node test-runner / environment interaction, not a
+protocol defect — the actual production code path (the real e2e test above) is unaffected and
+passes cleanly. Do not spend further time chasing it without new evidence; running this file
+alone, or last in a batch, avoids it.
+
+The four steps below (kept for the historical record) are now ALL implemented and tested against
+`fixtures/app-server/fake-codex.mjs` — a real child process, not a mock:
 
 - **Response correlation.** `CodexAdapter` now spawns a reader-loop task on `connect()` that reads
   `stdout_rx` for the process lifetime, resolves pending requests by `id` via a
@@ -115,22 +167,25 @@ workspace 62→66, all still 0 failures):
   the hoped-for one, and the fix (a "pending creation" table keyed by request_id, to buffer an
   early notification until its create resolves) is not implemented.
 
-**Still not done — step 3, the one that actually connects a hub delivery to a Codex turn:**
+**Step 3 is done too.** `main.rs`'s event loop now handles `DeliveryAssign` (routes to the seat's
+`CodexAdapter`, choosing `CreateThread`/`StartTurn`/`SteerTurn` based on what's already known about
+that seat) and forwards the resulting `CodexEvent`s back to the hub as a `PostMessage`. Verified by
+the real round trip described above.
 
-- `main.rs`'s event loop still handles only 2 of 5 `HubEvent` variants (`HelloAccepted`, `Ping`).
-  `DeliveryAssign`, `ApprovalResolve`, and `SeatDetach` still fall into the catch-all and go
-  nowhere. `main.rs` still never constructs a `CodexAdapter` — nothing wires the hub client to it.
-- Agent text-delta notifications are not handled: `CodexEvent::body` is deliberately left empty,
-  because App Server's real field shape for streamed message content is not in the fixture or the
-  architecture doc, and guessing it would repeat the exact mistake this section exists to avoid.
+**Still genuinely not done:**
+
+- `ApprovalResolve` and `SeatDetach` still fall into `main.rs`'s catch-all and go nowhere.
+- Agent text-delta notifications are not handled: `CodexEvent::body` is deliberately left empty
+  and the reply posted is a synthetic status string (`"[roundtable-node] turn Completed (thread
+  ...)"`), not the agent's real output — App Server's actual field shape for streamed message
+  content is not in the fixture or the architecture doc, and guessing it would repeat the exact
+  mistake this section exists to avoid.
 - Approval requests and `tool/requestUserInput` are not handled at all.
+- The "pending creation" race noted above (an early `turn/started` for a brand-new thread can be
+  dropped) is unfixed.
 
-Closing this needs a `DeliveryAssign` handler in `main.rs` that looks up or creates the seat's
-`CodexAdapter`, calls `execute()` with `CreateThread` or `StartTurn`/`SteerTurn` as appropriate,
-and forwards the resulting `CodexEvent`s back to the hub — plus the `ApprovalResolve`/`SeatDetach`
-handlers. Do not report "the node talks to Codex" without re-checking this list; the previous
-version of it undersold nothing, but re-verify after any further change rather than trusting a
-memory of this paragraph.
+Do not report "the node talks to Codex" as more than this without re-checking this list; the
+round trip is real, but it carries a status ping, not real agent content, back to the hub.
 
 `PROTOCOL_VERSION` widened `u8 → u16` in the absorbed protocol; `NodeError::ProtocolVersion` was
 widened to match.

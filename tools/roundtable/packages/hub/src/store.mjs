@@ -157,7 +157,13 @@ export class Store {
     return this.#db.prepare('UPDATE nodes SET last_seen_ms = ? WHERE id = ?').run(Date.now(), id).changes > 0;
   }
 
-  createSeat({ id = randomUUID(), roomId, nodeId, alias, provider, sessionRef, state = 'attached' }) {
+  // Default 'idle', not 'attached': roundtable_protocol::SeatState's real variants are
+  // detached/offline/idle/running/waiting_approval/error — 'attached' isn't one of them and
+  // fails roundtable-node's deserialization of any Seat row that reaches it (e.g. inside a
+  // delivery.assign's seat roster). Found the same way as the Message.actor_id UUID mismatch:
+  // this hub's own tests never round-tripped a Seat through the real Rust struct until
+  // e2e-rust-node.test.mjs did.
+  createSeat({ id = randomUUID(), roomId, nodeId, alias, provider, sessionRef, state = 'idle' }) {
     const now = Date.now();
     try {
       this.#db
@@ -251,6 +257,23 @@ export class Store {
     return this.#db
       .prepare('SELECT * FROM messages WHERE room_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?')
       .all(roomId, afterSeq, capped);
+  }
+
+  /**
+   * Bounded room context for a delivery, matching `CONTEXT_MAX_MESSAGES` (20) in
+   * roundtable-protocol — the last `limit` messages strictly before `beforeSeq`, ascending.
+   * Roundtable never injects the full transcript into a delivery; this is the whole reason.
+   */
+  contextMessages(roomId, beforeSeq, limit = 20) {
+    const capped = Math.min(Math.max(0, limit), 200);
+    if (capped === 0) return [];
+    // Innermost query takes the last N by seq DESC, outer flips it back to ascending order —
+    // "last N before X" cannot be expressed as a single ascending LIMIT.
+    return this.#db.prepare(
+      `SELECT * FROM (
+         SELECT * FROM messages WHERE room_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?
+       ) ORDER BY seq ASC`,
+    ).all(roomId, beforeSeq, capped);
   }
 
   mentionsFor(messageId) {

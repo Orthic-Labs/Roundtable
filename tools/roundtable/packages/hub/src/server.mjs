@@ -308,28 +308,43 @@ export function createHub({
   });
 
   attachWebSocket(server, (conn, req) => {
+    // WsConnection re-emits the underlying socket's 'error' (see ws.mjs). Node's EventEmitter
+    // throws if 'error' is emitted with no listener attached — an abrupt disconnect (ECONNRESET
+    // from a killed process, a network blip) would otherwise crash this entire process and take
+    // down every OTHER connection with it. Found by killing the real roundtable-node binary
+    // mid-test. 'close' still fires separately and is what actually cleans up state.
+    conn.on('error', () => {});
+
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname;
     if (path !== '/node/connect' && path !== '/api/events') {
       conn.close(1008, 'unknown websocket path');
       return;
     }
+    const isNode = path === '/node/connect';
 
-    // A node names itself and where it left off; the browser stream does neither.
-    conn.meta = {
-      isNode: path === '/node/connect',
-      nodeId: url.searchParams.get('node_id') ?? null,
-      cursor: Number(url.searchParams.get('cursor') ?? 0) || 0,
-    };
-    nodeConnections.add(conn);
-    conn.on('close', () => nodeConnections.delete(conn));
-
-    // Replay anything missed while disconnected, before any new event is sent. Without this a
-    // node that drops mid-delivery silently loses it.
-    for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId: conn.meta.nodeId })) {
-      conn.send(JSON.stringify(encodeFrame(evt.type, { ...evt.payload, cursor: evt.cursor })));
-      conn.meta.cursor = evt.cursor;
+    if (!isNode) {
+      // The browser stream has no handshake — it just names where it left off.
+      conn.meta = { isNode: false, nodeId: null, cursor: Number(url.searchParams.get('cursor') ?? 0) || 0 };
+      nodeConnections.add(conn);
+      conn.on('close', () => nodeConnections.delete(conn));
+      for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId: null })) {
+        conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload)));
+        conn.meta.cursor = evt.cursor;
+      }
+      return;
     }
+
+    // A real node's connect sequence (crates/roundtable-node/src/hub.rs::connect_and_drive)
+    // is: dial the transport, send node.hello FIRST (carrying its own node_id/token/resume
+    // cursor), then read exactly one frame back and require it to be hello.accepted or fail the
+    // connection outright. There is no `?node_id=`/`?cursor=` query string on the real client's
+    // URL at all — those were a manual-testing convenience during earlier development of this
+    // hub and never matched what the compiled binary actually sends. Discovered by
+    // e2e-rust-node.test.mjs spawning the real binary; every other test in this suite fakes the
+    // node side with a raw WebSocket that skipped this handshake entirely.
+    conn.meta = { isNode: true, nodeId: null, cursor: 0 };
+    let helloReceived = false;
 
     conn.on('message', (text) => {
       let frame;
@@ -339,13 +354,53 @@ export function createHub({
         conn.close(1003, 'bad frame');
         return;
       }
+
+      if (!helloReceived) {
+        if (frame.type !== NodeFrame.HELLO) {
+          conn.close(1003, 'expected node.hello as the first frame');
+          return;
+        }
+        // Wrapped under "hello": the node serializes HubCommand::Hello(HelloFrame) — a tuple
+        // variant — which serde's default externally-tagged representation nests as
+        // {"hello": {node_id, token, hostname, os, version, resume_cursor}}, not flat. Every
+        // HubCommand variant needs this same unwrap; MESSAGE_POST and DELIVERY_ACK below do too.
+        // Verified against the real compiled binary's actual bytes on the wire — a hand-guessed
+        // flat shape passed every JS-only test while being wrong.
+        const { node_id: nodeId, resume_cursor: resumeCursor } = frame.payload?.hello ?? {};
+        if (!nodeId || !store.getNode(nodeId)) {
+          conn.close(1008, 'unknown node_id');
+          return;
+        }
+        helloReceived = true;
+        conn.meta.nodeId = nodeId;
+        conn.meta.cursor = Number(resumeCursor ?? 0) || 0;
+        nodeConnections.add(conn);
+        conn.on('close', () => nodeConnections.delete(conn));
+
+        // seat_tokens is sent empty: per-seat token issuance/rotation is not implemented and is
+        // not invented here.
+        conn.send(JSON.stringify(encodeFrame(HubFrame.HELLO_ACCEPTED, {
+          node_id: nodeId, heartbeat_ms: 15000, resume_cursor: conn.meta.cursor, seat_tokens: [],
+        })));
+
+        // Replay anything missed while disconnected, before any new event is sent. Without this
+        // a node that drops mid-delivery silently loses it.
+        for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId })) {
+          conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload)));
+          conn.meta.cursor = evt.cursor;
+        }
+        return;
+      }
+
       if (frame.type === NodeFrame.PONG) return;
       if (frame.type === NodeFrame.DELIVERY_ACK) {
-        store.ackDelivery(frame.payload?.delivery_id);
+        // HubCommand::DeliveryAck { delivery_id } is a struct variant -> {"delivery_ack": {...}}.
+        store.ackDelivery(frame.payload?.delivery_ack?.delivery_id);
         return;
       }
       if (frame.type === NodeFrame.MESSAGE_POST) {
-        handleNodeMessagePost(frame.payload);
+        // HubCommand::MessagePost { ... } likewise -> {"message_post": {...}}.
+        handleNodeMessagePost(frame.payload?.message_post);
       }
     });
   });
@@ -386,6 +441,14 @@ export function createHub({
    * Returns true if a live connection took it; false means it stays queued for replay.
    */
   function dispatch(delivery, frameType, payload) {
+    // payload is sent to the node VERBATIM — no cursor is spliced in. roundtable-node's
+    // HubEvent is an externally-tagged enum (one top-level key: the variant name, e.g.
+    // "delivery_assign"); adding a sibling "cursor" key there would break its own
+    // serde_json::from_value deserialization, not just be ignored. Confirmed the node does not
+    // even read a per-event cursor field: its only cursor advance in this path
+    // (`s.mark_event_acked(Uuid::now_v7(), accepted.resume_cursor)`) reuses the handshake's
+    // resume_cursor, not anything from this payload. `conn.meta.cursor` below is purely the
+    // HUB's own bookkeeping for what to replay on a future reconnect.
     const envelope = encodeFrame(frameType, payload);
     const evt = store.appendEvent({
       targetNodeId: delivery?.node_id ?? null, type: frameType, payload,
@@ -393,7 +456,7 @@ export function createHub({
     for (const conn of nodeConnections) {
       if (!conn.meta?.isNode) continue;
       if (delivery?.node_id && conn.meta.nodeId && conn.meta.nodeId !== delivery.node_id) continue;
-      conn.send(JSON.stringify({ ...envelope, payload: { ...payload, cursor: evt.cursor } }));
+      conn.send(JSON.stringify(envelope));
       conn.meta.cursor = evt.cursor;
       return true;
     }
@@ -412,7 +475,36 @@ export function createHub({
       let sent = 0;
       for (const d of store.pendingDispatch()) {
         const message = store.raw.prepare('SELECT * FROM messages WHERE id = ?').get(d.message_id);
-        if (dispatch(d, HubFrame.DELIVERY_ASSIGN, { delivery: d, message })) {
+        const room = store.getRoom(d.room_id);
+        const parent = message.reply_to
+          ? store.raw.prepare('SELECT * FROM messages WHERE id = ?').get(message.reply_to)
+          : null;
+        // 20 = roundtable-protocol::CONTEXT_MAX_MESSAGES. Roundtable never injects the full
+        // transcript into a delivery; this bound is why.
+        const contextMessages = store.contextMessages(d.room_id, message.seq, 20);
+        const withMentions = (m) => ({ ...m, mentioned_seat_ids: store.mentionsFor(m.id) });
+
+        // Wrapped under "delivery_assign": roundtable-node deserializes this whole payload
+        // straight into its own HubEvent enum via serde_json::from_value, which (no explicit
+        // tag/content attribute on that enum) uses externally-tagged representation — every
+        // variant's fields live one level deeper, under the snake_case variant name. Every field
+        // below is required by crates/roundtable-node/src/hub.rs's HubEvent::DeliveryAssign; the
+        // node silently drops the whole event (via `.ok()`) if any is missing or misnamed rather
+        // than erroring loudly, which is what let this go unnoticed until the real binary was
+        // driven end-to-end.
+        const payload = {
+          delivery_assign: {
+            delivery: d,
+            message: withMentions(message),
+            parent: parent ? withMentions(parent) : null,
+            context_messages: contextMessages.map(withMentions),
+            room_slug: room.slug,
+            room_title: room.title,
+            room_objective: room.objective,
+            seats: store.listSeats(d.room_id),
+          },
+        };
+        if (dispatch(d, HubFrame.DELIVERY_ASSIGN, payload)) {
           store.raw.prepare("UPDATE deliveries SET state = 'sent', updated_at_ms = ? WHERE id = ?")
             .run(Date.now(), d.id);
           sent += 1;

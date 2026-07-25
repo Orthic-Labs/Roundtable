@@ -454,12 +454,28 @@ impl HubDriver {
                     Err(_) => continue,
                 };
                 if env.version != PROTOCOL_VERSION { continue; }
-                let evt: Option<HubEvent> = match env.kind.as_str() {
-                    "delivery.assign" => serde_json::from_value(env.payload).ok(),
-                    "approval.resolve" => serde_json::from_value(env.payload).ok(),
-                    "seat.detach" => serde_json::from_value(env.payload).ok(),
-                    "ping" => serde_json::from_value(env.payload).ok(),
-                    _ => None,
+                // A deserialization failure here used to be entirely silent (`.ok()` alone,
+                // dropping the Err with no trace at all): a hub frame whose shape didn't match
+                // HubEvent's field names/types just vanished, and nothing distinguished "the hub
+                // never sent this" from "the hub sent it and this node silently failed to parse
+                // it" — which cost real debugging time chasing what turned out to be exactly the
+                // latter. Every failure now logs the kind and the serde error before being
+                // dropped; the drop-and-continue behavior itself is unchanged.
+                let kind = env.kind.clone();
+                let evt: Option<HubEvent> = match kind.as_str() {
+                    "delivery.assign" | "approval.resolve" | "seat.detach" | "ping" => {
+                        match serde_json::from_value(env.payload) {
+                            Ok(evt) => Some(evt),
+                            Err(e) => {
+                                warn!(kind = %kind, error = %e, "failed to parse hub event; dropping");
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        warn!(kind = %kind, "unrecognized hub frame kind; dropping");
+                        None
+                    }
                 };
                 if let Some(evt) = evt {
                     if reader_tx.send(evt).is_err() { break; }
