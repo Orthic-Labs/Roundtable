@@ -17,6 +17,15 @@ imports `tokio::net::{UnixListener, UnixStream}` unconditionally (line 16) and u
 This is not a lurking edge case — it is a hard build failure, and it is the whole of the Windows
 work. Everything else in the node is already portable.
 
+**Verified, not assumed:** tokio exports both types under `#[cfg(all(unix, feature = "net"))]`
+(`tokio/src/net/mod.rs`, via the `cfg_net_unix!` macro), and the import at `ipc.rs:16` carries no
+cfg gate.
+
+**You must build ON Windows.** Cross-compiling from the Mac was attempted and does not work:
+`cargo check --target x86_64-pc-windows-msvc` dies in `ring`'s build script long before reaching
+this code, because there is no Windows C toolchain here. So `cargo check` on the Mac will never
+tell you whether the Windows build is fixed — only a build on the machine itself will.
+
 `main.rs` line 1 already carries `#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]`,
 so somebody intended this to run there; the IPC layer just never followed.
 
