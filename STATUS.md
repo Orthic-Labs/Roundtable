@@ -186,7 +186,19 @@ agent session, where silence is indistinguishable from a hang.
 
 **`handoff.create`** reads the roster per handoff rather than caching it. A cached roster is stale
 exactly when it matters — a seat added or detached mid-session — and a handoff to a stale `seat_id`
-fails silently.
+fails silently. It shares `message.reply`'s precondition: the node must be holding a delivery for
+the originating seat, otherwise there is no room to resolve the alias against.
+
+**Verified in production, 2026-07-26**, against the deployed hub over `wss://` — not in a fixture:
+
+| Probe over the live IPC socket | Result |
+|---|---|
+| `transcript_read` on room `main` | `ok`, 3 real messages out of the production database |
+| `transcript_search` for `"ROUNDTABLE"` | `ok`, 5 hits |
+| `transcript_search` for text that is absent | `ok`, 0 hits |
+| `transcript_read` on a room this node has no seat in | refused, `room_not_accessible` |
+| `handoff_create` with no delivery in flight | correct precondition error, not "not implemented" |
+| `ping` | `pong` |
 
 Two seam defects were found and fixed while wiring this, both previously unreachable because the
 methods were stubs: `packages/claude-channel` sent `since_seq` where the node reads `after_seq`
