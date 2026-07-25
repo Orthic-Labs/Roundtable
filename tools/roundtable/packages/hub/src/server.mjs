@@ -9,6 +9,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachWebSocket } from './ws.mjs';
+import { encodeFrame, decodeFrame, HubFrame, NodeFrame } from './wire.mjs';
 import {
   SESSION_COOKIE, hashSecretBytes, tokenMatches, randomToken,
   sessionCookie, clearSessionCookie, sessionFromHeaders, originAllowed,
@@ -296,14 +297,62 @@ export function createHub({
   });
 
   attachWebSocket(server, (conn, req) => {
-    const path = new URL(req.url, 'http://localhost').pathname;
+    const url = new URL(req.url, 'http://localhost');
+    const path = url.pathname;
     if (path !== '/node/connect' && path !== '/api/events') {
       conn.close(1008, 'unknown websocket path');
       return;
     }
+
+    // A node names itself and where it left off; the browser stream does neither.
+    conn.meta = {
+      isNode: path === '/node/connect',
+      nodeId: url.searchParams.get('node_id') ?? null,
+      cursor: Number(url.searchParams.get('cursor') ?? 0) || 0,
+    };
     nodeConnections.add(conn);
     conn.on('close', () => nodeConnections.delete(conn));
+
+    // Replay anything missed while disconnected, before any new event is sent. Without this a
+    // node that drops mid-delivery silently loses it.
+    for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId: conn.meta.nodeId })) {
+      conn.send(JSON.stringify(encodeFrame(evt.type, { ...evt.payload, cursor: evt.cursor })));
+      conn.meta.cursor = evt.cursor;
+    }
+
+    conn.on('message', (text) => {
+      let frame;
+      try {
+        frame = decodeFrame(text);
+      } catch {
+        conn.close(1003, 'bad frame');
+        return;
+      }
+      if (frame.type === NodeFrame.PONG) return;
+      if (frame.type === NodeFrame.DELIVERY_ACK) {
+        store.ackDelivery(frame.payload?.delivery_id);
+      }
+    });
   });
+
+  /**
+   * Push one queued delivery to whichever connection owns that seat's node.
+   * Returns true if a live connection took it; false means it stays queued for replay.
+   */
+  function dispatch(delivery, frameType, payload) {
+    const envelope = encodeFrame(frameType, payload);
+    const evt = store.appendEvent({
+      targetNodeId: delivery?.node_id ?? null, type: frameType, payload,
+    });
+    for (const conn of nodeConnections) {
+      if (!conn.meta?.isNode) continue;
+      if (delivery?.node_id && conn.meta.nodeId && conn.meta.nodeId !== delivery.node_id) continue;
+      conn.send(JSON.stringify({ ...envelope, payload: { ...payload, cursor: evt.cursor } }));
+      conn.meta.cursor = evt.cursor;
+      return true;
+    }
+    return false;
+  }
 
   return {
     server,
@@ -311,6 +360,20 @@ export function createHub({
     get sessionCount() { return sessions.size; },
     get connectionCount() { return nodeConnections.size; },
     store,
+    dispatch,
+    /** Push every queued delivery whose node is connected. Returns how many were taken. */
+    flushDeliveries() {
+      let sent = 0;
+      for (const d of store.pendingDispatch()) {
+        const message = store.raw.prepare('SELECT * FROM messages WHERE id = ?').get(d.message_id);
+        if (dispatch(d, HubFrame.DELIVERY_ASSIGN, { delivery: d, message })) {
+          store.raw.prepare("UPDATE deliveries SET state = 'sent', updated_at_ms = ? WHERE id = ?")
+            .run(Date.now(), d.id);
+          sent += 1;
+        }
+      }
+      return sent;
+    },
     listen: (port, host = '127.0.0.1') => new Promise((resolve) => {
       server.listen(port, host, () => resolve(server.address()));
     }),

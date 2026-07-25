@@ -234,6 +234,23 @@ export class Store {
     return this.#db.prepare('SELECT seat_id FROM message_mentions WHERE message_id = ?').all(messageId).map((r) => r.seat_id);
   }
 
+  /** Mark a delivery acknowledged. Returns false if it is unknown or already past queued/sent. */
+  ackDelivery(deliveryId) {
+    if (!deliveryId) return false;
+    return this.#db
+      .prepare("UPDATE deliveries SET state = 'acked', updated_at_ms = ? WHERE id = ? AND state IN ('queued','sent')")
+      .run(Date.now(), deliveryId).changes > 0;
+  }
+
+  /** Queued deliveries across all rooms, joined to the node that owns each seat, oldest first. */
+  pendingDispatch({ limit = 100 } = {}) {
+    return this.#db
+      .prepare(`SELECT d.*, s.node_id, s.alias
+                FROM deliveries d JOIN seats s ON s.id = d.seat_id
+                WHERE d.state = 'queued' ORDER BY d.created_at_ms ASC LIMIT ?`)
+      .all(Math.min(Math.max(1, limit), 500));
+  }
+
   queuedDeliveries(seatId) {
     return this.#db.prepare("SELECT * FROM deliveries WHERE seat_id = ? AND state = 'queued' ORDER BY created_at_ms ASC").all(seatId);
   }
