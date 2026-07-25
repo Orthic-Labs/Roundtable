@@ -82,46 +82,55 @@ Two implementation notes worth keeping:
 session and back. The transport is up; seat routing on the node side is where that continues, and
 the gap there is now measured, not guessed at.
 
-## Node↔Codex seat routing — measured gap (2026-07-25)
+## Node↔Codex seat routing — steps 1–2 done, verified against the real fixture (2026-07-25)
 
-`main.rs`'s event loop handles exactly two of the five `HubEvent` variants:
-`HelloAccepted` (logs it) and `Ping` (logs it). It does not handle `DeliveryAssign`,
-`ApprovalResolve`, or `SeatDetach` at all — a message delivered to a seat is currently logged via
-the `other => tracing::info!(?other, ...)` catch-all and goes nowhere.
+Was previously measured (below, kept for the record) as four undone steps. Steps 1 and 2 are now
+implemented and tested against `fixtures/app-server/fake-codex.mjs` — a real child process, not a
+mock — with 4 new tests (7 total in `codex.rs`, `roundtable-node` now 24→28,
+workspace 62→66, all still 0 failures):
 
-`codex.rs`'s `CodexAdapter` is further from working than its 24-passing-test file suggests:
+- **Response correlation.** `CodexAdapter` now spawns a reader-loop task on `connect()` that reads
+  `stdout_rx` for the process lifetime, resolves pending requests by `id` via a
+  `HashMap<i64, oneshot::Sender<...>>`, and routes turn-lifecycle notifications
+  (`turn/started`/`turn/completed`/`turn/interrupted`/`turn/failed`) to a seat by reverse-looking-up
+  `thread_id` in the `seats` map. `connect()`'s `initialize` call now genuinely awaits its response
+  instead of firing and moving on regardless of what came back.
+- **`execute(seat_id, CodexCommand) -> NodeResult<Value>`** exists and sends the real methods —
+  `thread/list`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt` — plus a
+  **new `CodexCommand::CreateThread` variant** for `thread/start`, which the enum had no way to
+  reach before this: the old set could `StartTurn` on an existing `thread_id` or `ResumeThread`,
+  but nothing could create a seat's first thread.
+- **A real bug was found and fixed in `subscribe()`**, unrelated to routing but blocking every test
+  above: the old mpsc-based version built a fresh `(tx, rx)` pair per call and returned `rx`, but
+  `tx` was a local variable dropped when the function returned — every receiver handed to a caller
+  was orphaned before its first event, and nothing had ever exercised this path against real events
+  before today. Replaced with a `tokio::sync::broadcast` channel, where `subscribe()` can be called
+  any number of times and each caller gets a genuinely live receiver.
+- **A real ordering race was found and documented, not hidden:** for a brand-new thread, the
+  fixture's `turn/started` notification arrives on the wire *before* the `thread/start` response
+  that `execute()` is waiting on to learn the `thread_id` — so `notification_to_event` has no seat
+  to route it to yet and correctly drops it. Only the later `turn/completed` (after the mapping
+  exists) is deliverable. This is inherent to the protocol shape, not a test artifact; the test
+  (`create_thread_round_trips_and_routes_events_to_the_seat`) asserts the real outcome rather than
+  the hoped-for one, and the fix (a "pending creation" table keyed by request_id, to buffer an
+  early notification until its create resolves) is not implemented.
 
-- `connect()` spawns the Codex process and sends exactly two frames — `initialize` and
-  `initialized` — and never reads a response to either. There is no response-reading loop over
-  `stdout_rx` at all outside those two calls.
-- `CodexCommand` (`StartTurn`, `SteerTurn`, `ResumeThread`, `ListThreads`, `InterruptTurn`,
-  `Shutdown`) is a real enum with a passing serialization test
-  (`command_serializes_with_op_tag`), but **nothing in `CodexAdapter` accepts a `CodexCommand` and
-  sends it.** There is no `execute(cmd: CodexCommand)` or equivalent — the variants are currently
-  dead code reachable only from the test.
-- `request_id` is incremented per `send_request` call but never used to correlate an incoming
-  JSON-RPC response back to the request that produced it — there is no response-to-request
-  matching at all.
-- `main.rs` never constructs a `CodexAdapter`. Nothing wires the hub client to the Codex adapter.
+**Still not done — step 3, the one that actually connects a hub delivery to a Codex turn:**
 
-What proving an actual round trip requires, in order:
+- `main.rs`'s event loop still handles only 2 of 5 `HubEvent` variants (`HelloAccepted`, `Ping`).
+  `DeliveryAssign`, `ApprovalResolve`, and `SeatDetach` still fall into the catch-all and go
+  nowhere. `main.rs` still never constructs a `CodexAdapter` — nothing wires the hub client to it.
+- Agent text-delta notifications are not handled: `CodexEvent::body` is deliberately left empty,
+  because App Server's real field shape for streamed message content is not in the fixture or the
+  architecture doc, and guessing it would repeat the exact mistake this section exists to avoid.
+- Approval requests and `tool/requestUserInput` are not handled at all.
 
-1. A `stdout_rx` reader loop in `CodexAdapter`, parsing JSON-RPC responses and notifications and
-   correlating them to `request_id`.
-2. An `execute(CodexCommand) -> NodeResult<Value>` (or streaming equivalent) that actually sends
-   `StartTurn`/`SteerTurn`/etc. and returns or streams the result — the current `send_request` only
-   fires the two handshake frames.
-3. In `main.rs`'s event loop: a `DeliveryAssign` handler that looks up (or creates) the seat's
-   `CodexAdapter`, converts the delivered `Message` into a `CodexCommand::StartTurn` (or
-   `SteerTurn` if a turn is active), and forwards `CodexAdapter`'s resulting `CodexEvent`s back to
-   the hub as a reply.
-4. `ApprovalResolve` and `SeatDetach` handlers — currently also silently swallowed by the
-   catch-all.
-
-None of this exists yet. Do not report "the node talks to Codex" without re-verifying against this
-list — the 24 passing `roundtable-node` tests do not cover any of it; they test `HubClient`
-against a fixture and `CodexCommand`'s serialization in isolation, not the adapter driving a real
-Codex process through a real turn.
+Closing this needs a `DeliveryAssign` handler in `main.rs` that looks up or creates the seat's
+`CodexAdapter`, calls `execute()` with `CreateThread` or `StartTurn`/`SteerTurn` as appropriate,
+and forwards the resulting `CodexEvent`s back to the hub — plus the `ApprovalResolve`/`SeatDetach`
+handlers. Do not report "the node talks to Codex" without re-checking this list; the previous
+version of it undersold nothing, but re-verify after any further change rather than trusting a
+memory of this paragraph.
 
 `PROTOCOL_VERSION` widened `u8 → u16` in the absorbed protocol; `NodeError::ProtocolVersion` was
 widened to match.
