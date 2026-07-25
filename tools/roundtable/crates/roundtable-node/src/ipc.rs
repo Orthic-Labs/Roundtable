@@ -80,9 +80,18 @@ pub enum IpcNotification {
 
 pub type IpcNotificationTx = mpsc::UnboundedSender<(Uuid, IpcNotification)>;
 
+/// A request from a connected channel, paired with the channel to answer on.
+///
+/// The IPC server does not know what a room or a hub is — `main.rs` owns that. Requests are
+/// handed out on this channel and answered asynchronously, the same shape `ClientCommand` uses
+/// for the hub. Before this existed every handler returned a canned success: `message.reply`
+/// answered `{"posted": true}` having posted nothing at all.
+pub type IpcRequestTx = mpsc::UnboundedSender<(IpcRequest, tokio::sync::oneshot::Sender<IpcResponse>)>;
+
 pub struct IpcServer {
     socket_path: PathBuf,
     notify_tx: Arc<Mutex<Option<IpcNotificationTx>>>,
+    request_tx: Arc<Mutex<Option<IpcRequestTx>>>,
     listener_task: Mutex<Option<tokio::task::JoinHandle<NodeResult<()>>>>,
 }
 
@@ -91,8 +100,16 @@ impl IpcServer {
         Self {
             socket_path,
             notify_tx: Arc::new(Mutex::new(None)),
+            request_tx: Arc::new(Mutex::new(None)),
             listener_task: Mutex::new(None),
         }
+    }
+
+    /// Route incoming requests to `tx` instead of answering them with canned success. Call before
+    /// `start()`; without it the server still runs but every request is refused, which is at least
+    /// honest about doing nothing.
+    pub async fn set_request_handler(&self, tx: IpcRequestTx) {
+        *self.request_tx.lock().await = Some(tx);
     }
 
     pub async fn start(&self) -> NodeResult<()> {
@@ -109,13 +126,15 @@ impl IpcServer {
         *self.notify_tx.lock().await = Some(tx);
         let rx = Arc::new(Mutex::new(rx));
         let path = self.socket_path.clone();
+        let request_tx = self.request_tx.lock().await.clone();
         let task = tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, _addr)) => {
                         let rx = rx.clone();
+                        let request_tx = request_tx.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, rx.clone()).await {
+                            if let Err(e) = handle_connection(stream, rx.clone(), request_tx).await {
                                 warn!(error = %e, "ipc connection failed");
                             }
                         });
@@ -151,43 +170,78 @@ impl IpcServer {
     }
 }
 
+/// One connected channel (the `packages/claude-channel` MCP server).
+///
+/// Reads requests AND writes server-initiated notifications on the same socket, concurrently.
+/// Both directions matter: a Claude seat learns about a delivery only via `delivery.assign`, and
+/// the notification receiver was previously accepted and then never read, so no notification ever
+/// reached anyone.
+///
+/// `Ping` is answered locally — it is a liveness probe for this socket, not something the hub
+/// needs to see.
 async fn handle_connection(
     stream: UnixStream,
     rx: Arc<Mutex<mpsc::UnboundedReceiver<(Uuid, IpcNotification)>>>,
+    request_tx: Option<IpcRequestTx>,
 ) -> NodeResult<()> {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let mut buf = Vec::new();
     loop {
         buf.clear();
-        let n = reader.read_until(b'\n', &mut buf).await?;
-        if n == 0 { break; }
-        while matches!(buf.last(), Some(b'\n')) { buf.pop(); }
-        let req: IpcRequest = match serde_json::from_slice(&buf) {
-            Ok(r) => r,
-            Err(e) => {
-                let resp = IpcResponse::err(Uuid::nil(), format!("bad request: {e}"));
+        tokio::select! {
+            // Server -> channel. Held only while a notification is pending, so a single connection
+            // does not starve reads.
+            notif = async { rx.lock().await.recv().await } => {
+                let Some((seat_id, notif)) = notif else { break };
+                let frame = serde_json::json!({ "seat_id": seat_id, "notification": notif });
+                let bytes = serde_json::to_vec(&frame)?;
+                write.write_all(&bytes).await?;
+                write.write_all(b"\n").await?;
+                write.flush().await?;
+                debug!(%seat_id, "ipc notification delivered");
+            }
+            // Channel -> server.
+            read = reader.read_until(b'\n', &mut buf) => {
+                let n = read?;
+                if n == 0 { break; }
+                while matches!(buf.last(), Some(b'\n')) { buf.pop(); }
+                let req: IpcRequest = match serde_json::from_slice(&buf) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let resp = IpcResponse::err(Uuid::nil(), format!("bad request: {e}"));
+                        let bytes = serde_json::to_vec(&resp)?;
+                        write.write_all(&bytes).await?;
+                        write.write_all(b"\n").await?;
+                        write.flush().await?;
+                        continue;
+                    }
+                };
+                let request_id = Uuid::now_v7();
+                let resp = match req {
+                    IpcRequest::Ping { nonce } => IpcResponse::ok(request_id, serde_json::json!({"pong": nonce})),
+                    other => match &request_tx {
+                        Some(tx) => {
+                            let (respond, wait) = tokio::sync::oneshot::channel();
+                            if tx.send((other, respond)).is_err() {
+                                IpcResponse::err(request_id, "node is shutting down")
+                            } else {
+                                match wait.await {
+                                    Ok(mut r) => { r.request_id = request_id; r }
+                                    Err(_) => IpcResponse::err(request_id, "handler dropped the request"),
+                                }
+                            }
+                        }
+                        // Refusing beats the old behaviour of claiming success for work never done.
+                        None => IpcResponse::err(request_id, "no request handler is installed on this node"),
+                    },
+                };
                 let bytes = serde_json::to_vec(&resp)?;
                 write.write_all(&bytes).await?;
                 write.write_all(b"\n").await?;
-                continue;
+                write.flush().await?;
             }
-        };
-        let request_id = Uuid::now_v7();
-        let resp = match req {
-            IpcRequest::SessionJoin { .. } => IpcResponse::ok(request_id, serde_json::json!({"joined": true})),
-            IpcRequest::SessionLeave { .. } => IpcResponse::ok(request_id, serde_json::json!({"left": true})),
-            IpcRequest::TranscriptRead { .. } => IpcResponse::ok(request_id, serde_json::json!({"messages": []})),
-            IpcRequest::TranscriptSearch { .. } => IpcResponse::ok(request_id, serde_json::json!({"matches": []})),
-            IpcRequest::MessageReply { .. } => IpcResponse::ok(request_id, serde_json::json!({"posted": true})),
-            IpcRequest::HandoffCreate { .. } => IpcResponse::ok(request_id, serde_json::json!({"handoff_id": Uuid::now_v7()})),
-            IpcRequest::ApprovalVerdict { .. } => IpcResponse::ok(request_id, serde_json::json!({"recorded": true})),
-            IpcRequest::Ping { nonce } => IpcResponse::ok(request_id, serde_json::json!({"pong": nonce})),
-        };
-        let bytes = serde_json::to_vec(&resp)?;
-        write.write_all(&bytes).await?;
-        write.write_all(b"\n").await?;
-        write.flush().await?;
+        }
     }
     Ok(())
 }

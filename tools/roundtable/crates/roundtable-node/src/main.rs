@@ -4,6 +4,7 @@ use roundtable_node::{
     codex::{CodexAdapter, CodexCommand, CodexEvent, CodexTurnStatus},
     config::NodeConfig,
     hub::{ClientCommand, HubClient, HubEvent, HubTransport, TcpHubChannel, WsHubChannel},
+    ipc::{IpcNotification, IpcRequest, IpcResponse, IpcServer},
     secrets::BearerToken,
     state::NodeState,
     NodeError, NodeResult,
@@ -88,6 +89,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Roundtable-specific field through an otherwise protocol-agnostic module.
     let routing = Arc::new(SeatRouting::default());
 
+    // The local IPC socket is how a Claude session joins a room: `packages/claude-channel` (an MCP
+    // server running inside that session) connects here. Without it, Claude seats receive nothing
+    // — the socket was never even opened before, so every Claude delivery went nowhere.
+    let ipc = Arc::new(IpcServer::new(PathBuf::from(&cfg.ipc_socket_path)));
+    let (ipc_tx, mut ipc_rx) = tokio::sync::mpsc::unbounded_channel();
+    ipc.set_request_handler(ipc_tx).await;
+    if let Err(e) = ipc.start().await {
+        // Non-fatal for the same reason Codex is: a node with only Codex seats does not need it.
+        tracing::warn!(error = %e, "ipc server did not start; claude seats will not work");
+    }
+
     // Drain hub events and Codex events concurrently for the life of the process. HubClient::new
     // already spawned the driver, which owns reconnect and cursor replay.
     loop {
@@ -97,7 +109,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::warn!("hub event stream ended; exiting");
                     break;
                 };
-                handle_hub_event(event, &client, &codex, &routing).await;
+                handle_hub_event(event, &client, &codex, &ipc, &routing).await;
+            }
+            ipc_request = ipc_rx.recv() => {
+                let Some((req, respond)) = ipc_request else {
+                    tracing::warn!("ipc request channel closed");
+                    continue;
+                };
+                let response = handle_ipc_request(req, &client, &routing).await;
+                let _ = respond.send(response);
             }
             codex_event = codex_events.recv() => {
                 match codex_event {
@@ -149,6 +169,7 @@ async fn handle_hub_event(
     event: HubEvent,
     client: &HubClient,
     codex: &Arc<CodexAdapter>,
+    ipc: &Arc<IpcServer>,
     routing: &Arc<SeatRouting>,
 ) {
     match event {
@@ -165,18 +186,28 @@ async fn handle_hub_event(
                 tracing::warn!(seat_id = %delivery.seat_id, "delivery for a seat not in its own roster");
                 return;
             };
-            if seat.provider != SeatProvider::Codex {
-                tracing::info!(
-                    seat_id = %seat.id, provider = ?seat.provider,
-                    "delivery for a non-Codex seat — not handled by this adapter",
-                );
-                return;
-            }
             // Must happen before any reply is posted: PostMessage refuses an unowned seat_id.
             client.register_seat(delivery.seat_id).await;
             routing.rooms.lock().await.insert(delivery.seat_id, message.room_id);
             routing.deliveries.lock().await.insert(delivery.seat_id, delivery.id);
-            dispatch_to_codex(delivery.seat_id, message.body, codex).await;
+
+            match seat.provider {
+                SeatProvider::Codex => {
+                    dispatch_to_codex(delivery.seat_id, message.body, codex).await;
+                }
+                // A Claude seat is driven by a human-attended Claude session over the local IPC
+                // socket, not by a child process this node spawns. The node's job is to hand the
+                // delivery to whatever channel is attached and let it reply on its own schedule;
+                // there is nothing to await here.
+                SeatProvider::Claude => {
+                    ipc.notify(delivery.seat_id, IpcNotification::DeliveryAssign {
+                        delivery_id: delivery.id,
+                        room_id: message.room_id,
+                        body: message.body,
+                    }).await;
+                    tracing::info!(seat_id = %delivery.seat_id, "delivery handed to the claude channel");
+                }
+            }
         }
         // A human answered a Guardian denial in the room. Approving replays the assessment event
         // back to Codex; any other decision is recorded and the action simply stays denied —
@@ -237,6 +268,73 @@ async fn handle_hub_event(
             routing.approvals.lock().await.retain(|_, p| p.seat_id != seat_id);
             client.unregister_seat(seat_id).await;
         }
+    }
+}
+
+/// Turns an IPC request from an attached Claude channel into real hub traffic.
+///
+/// Every arm used to return a canned success — `message.reply` answered `{"posted": true}` having
+/// posted nothing. What is implemented here is what the hub actually supports today; anything else
+/// returns an explicit error rather than pretending, because a channel that believes a silent
+/// no-op succeeded is worse than one that gets told no.
+async fn handle_ipc_request(
+    req: IpcRequest,
+    client: &HubClient,
+    routing: &Arc<SeatRouting>,
+) -> IpcResponse {
+    let id = Uuid::now_v7();
+    match req {
+        IpcRequest::MessageReply { seat_id, delivery_id, body, kind } => {
+            let Some(room_id) = routing.rooms.lock().await.get(&seat_id).copied() else {
+                return IpcResponse::err(id, "unknown seat — this node has no delivery for it");
+            };
+            if !client.owns_seat(seat_id).await {
+                return IpcResponse::err(id, "this node does not own that seat");
+            }
+            let message_kind = match kind.as_str() {
+                "progress" => MessageKind::Progress,
+                "completion" => MessageKind::Completion,
+                "question" => MessageKind::Question,
+                "system" => MessageKind::System,
+                _ => MessageKind::Chat,
+            };
+            let (response, rx) = tokio::sync::oneshot::channel();
+            client.send(ClientCommand::PostMessage {
+                seat_id, room_id, kind: message_kind, body, reply_to: None, response,
+            }).await;
+            match rx.await {
+                Ok(Ok(message_id)) => {
+                    // The delivery is done the moment its reply lands; leaving it open would keep
+                    // the lease alive and eventually retry work already completed.
+                    routing.deliveries.lock().await.remove(&seat_id);
+                    let _ = delivery_id;
+                    IpcResponse::ok(id, serde_json::json!({ "message_id": message_id }))
+                }
+                Ok(Err(e)) => IpcResponse::err(id, format!("hub rejected the reply: {e}")),
+                Err(_) => IpcResponse::err(id, "hub dropped the reply without responding"),
+            }
+        }
+        IpcRequest::HandoffCreate { from_seat_id, to_alias, body, evidence_refs } => {
+            // The hub's Handoff command needs a target seat UUID; the channel only knows an alias,
+            // and this node has no room roster to resolve it against. Resolving aliases node-side
+            // would mean caching the roster and keeping it fresh — not built, so this is refused
+            // rather than guessed.
+            let _ = (from_seat_id, to_alias, body, evidence_refs);
+            IpcResponse::err(id, "handoff.create is not implemented: the node cannot resolve a seat alias")
+        }
+        IpcRequest::ApprovalVerdict { .. } => {
+            IpcResponse::err(id, "approval.verdict is not implemented for claude seats")
+        }
+        IpcRequest::SessionJoin { .. } | IpcRequest::SessionLeave { .. } => {
+            // Seats are created out-of-band with ops/enrol-node.mjs; the node has no HTTP client
+            // and no admin credential with which to create one.
+            IpcResponse::err(id, "seats are enrolled on the hub (ops/enrol-node.mjs), not over IPC")
+        }
+        IpcRequest::TranscriptRead { .. } | IpcRequest::TranscriptSearch { .. } => {
+            // The node holds no transcript — the hub does, and the node has no read path to it.
+            IpcResponse::err(id, "transcript reads are not implemented on the node")
+        }
+        IpcRequest::Ping { nonce } => IpcResponse::ok(id, serde_json::json!({ "pong": nonce })),
     }
 }
 
