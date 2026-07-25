@@ -189,6 +189,24 @@ exactly when it matters — a seat added or detached mid-session — and a hando
 fails silently. It shares `message.reply`'s precondition: the node must be holding a delivery for
 the originating seat, otherwise there is no room to resolve the alias against.
 
+**`node.handoff.create` was decoded by nobody, exactly like `seat.interrupt`.** The frame was in the
+wire vocabulary and the node had always sent it, but the hub's message handler had no branch for it:
+it decoded, matched nothing, and fell on the floor. Because the node resolves its caller as soon as
+the frame is written, an agent was told its handoff succeeded while no row was ever written. Found
+by reading the production database after a live handoff returned `ok: true` — the node's answer was
+truthful about what it did (wrote the frame) and useless as evidence the handoff happened. Fixed
+with `handleNodeHandoffCreate`, which enforces the same boundary as every other node-authored
+action: a node may only hand off FROM a seat it owns.
+
+**Two node processes on one machine = an endless supersede loop.** Hit while debugging this: a
+foreground `roundtable-node` run overlapping the launchd agent produced
+`node.superseded` → `node.disconnected` → `node.connected` every ~2.3s forever, since each
+connection evicts the other's. The node's IPC socket also ends up stale — the file exists and
+`connect()` gets ECONNREFUSED, because the process that bound it is no longer the one that owns the
+path. Symptom to recognise: a repeating supersede triple in the hub log for ONE `node_id`. Check
+`ps aux | grep roundtable-node` before assuming a code defect; the fix is to leave exactly one
+process running.
+
 **Verified in production, 2026-07-26**, against the deployed hub over `wss://` — not in a fixture:
 
 | Probe over the live IPC socket | Result |
@@ -198,6 +216,7 @@ the originating seat, otherwise there is no room to resolve the alias against.
 | `transcript_search` for text that is absent | `ok`, 0 hits |
 | `transcript_read` on a room this node has no seat in | refused, `room_not_accessible` |
 | `handoff_create` with no delivery in flight | correct precondition error, not "not implemented" |
+| `handoff_create` WITH a delivery in flight | alias `mac-codex` resolved to its real seat_id, handoff row written to the production DB, wake message posted with `kind='handoff'`, and **the real Codex agent woke and replied into the room** |
 | `ping` | `pong` |
 
 Two seam defects were found and fixed while wiring this, both previously unreachable because the
