@@ -308,6 +308,20 @@ impl CodexAdapter {
             let mut child = cmd.spawn().map_err(|e| NodeError::Provider(format!("spawn: {e}")))?;
             let stdin = child.stdin.take().ok_or_else(|| NodeError::Provider("no stdin".into()))?;
             let stdout = child.stdout.take().ok_or_else(|| NodeError::Provider("no stdout".into()))?;
+            // DRAIN STDERR. It is piped, and a piped stream that is never read fills its ~64KB
+            // kernel buffer and then blocks the child FOREVER on its next write. Real
+            // `codex app-server` starts several MCP servers and logs enough to hit that: the
+            // handshake succeeded, then `thread/start` hung until it timed out, with no error
+            // anywhere — the process was simply wedged writing to a full pipe. The fixture logs
+            // nothing, so no test could ever have caught this.
+            if let Some(stderr) = child.stderr.take() {
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        debug!(target: "codex_stderr", "{line}");
+                    }
+                });
+            }
             *self.process.lock().await = Some(child);
             *self.stdin_tx.lock().await = Some(stdin);
             *self.stdout_rx.lock().await = Some(BufReader::new(stdout).lines());
@@ -467,8 +481,19 @@ impl CodexAdapter {
             }
             _ => return None,
         };
-        let seat_id = seats.lock().await.values()
-            .find(|s| s.thread_id == thread_id).map(|s| s.seat_id)?;
+        let seat_id = {
+            let mut guard = seats.lock().await;
+            let seat_id = guard.values().find(|s| s.thread_id == thread_id).map(|s| s.seat_id)?;
+            // A finished turn is no longer steerable. Without clearing this, the NEXT delivery for
+            // the seat sees a stale active_turn_id and sends turn/steer, which real Codex rejects
+            // with "no active turn to steer" — so the second message to any seat was silently lost.
+            if method == "turn/completed" && status != CodexTurnStatus::Running {
+                if let Some(seat) = guard.get_mut(&seat_id) {
+                    seat.active_turn_id = None;
+                }
+            }
+            seat_id
+        };
         Some(CodexEvent {
             seat_id, thread_id, turn_id, status, body,
             kind: method.to_string(),

@@ -41,7 +41,10 @@ async fn fake_codex_speaks_the_real_thread_and_turn_shapes() {
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
 
     send(&mut stdin, serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        // clientInfo requires BOTH name and version; real codex app-server rejects a missing
+        // version with "Invalid request: missing field `version`".
+        "params": {"clientInfo": {"name": "contract-test", "version": "0.1.0"}}
     })).await;
     let resp = next_frame(&mut lines).await;
     assert_eq!(resp["jsonrpc"], "2.0");
@@ -109,7 +112,8 @@ async fn fake_codex_emits_a_denied_guardian_review_on_demand() {
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
 
     send(&mut stdin, serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"clientInfo": {"name": "contract-test", "version": "0.1.0"}}
     })).await;
     next_frame(&mut lines).await;
     send(&mut stdin, serde_json::json!({
@@ -134,6 +138,34 @@ async fn fake_codex_emits_a_denied_guardian_review_on_demand() {
     assert_eq!(review["params"]["review"]["status"], "denied");
     assert_eq!(review["params"]["action"]["type"], "command");
     assert!(review["params"]["reviewId"].is_string());
+
+    let _ = child.kill().await;
+}
+
+/// The fixture must REJECT an initialize without clientInfo.version, exactly as real
+/// `codex app-server` does. The node shipped a handshake missing that field and every test passed
+/// because the fixture used to accept it; only pointing the node at real Codex found it.
+#[tokio::test]
+async fn fake_codex_rejects_an_initialize_without_a_client_version() {
+    let mut child = Command::new("node")
+        .arg(fixture_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn().expect("spawn fake-codex");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+
+    send(&mut stdin, serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"clientInfo": {"name": "no-version"}}
+    })).await;
+    let resp = next_frame(&mut lines).await;
+    assert!(resp["result"].is_null(), "a versionless clientInfo must not succeed");
+    assert!(
+        resp["error"]["message"].as_str().unwrap_or_default().contains("version"),
+        "the error must name the missing field: {resp}",
+    );
 
     let _ = child.kill().await;
 }
