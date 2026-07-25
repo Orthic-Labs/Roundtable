@@ -38,3 +38,6 @@ _mockups/
 
 # local package-manager cache
 .pnpm-store/
+
+# PWA build output and installed deps (built on demand with npm + vite)
+tools/roundtable/packages/web/dist/

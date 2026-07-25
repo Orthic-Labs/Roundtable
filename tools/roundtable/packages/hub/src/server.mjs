@@ -5,6 +5,9 @@
 // clear 501 rather than a 404 that looks like a typo.
 
 import { createServer } from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { extname, join, normalize, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { attachWebSocket } from './ws.mjs';
 import {
   SESSION_COOKIE, hashSecretBytes, tokenMatches, randomToken,
@@ -14,6 +17,22 @@ import {
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Built PWA. `vite build` writes here; the hub serves it directly, so there is no second server. */
+export const DEFAULT_WEB_ROOT = resolve(
+  fileURLToPath(new URL('.', import.meta.url)), '../../web/dist',
+);
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
+};
 
 /**
  * Typed store errors map to status codes here rather than the handlers string-matching SQLite.
@@ -77,6 +96,45 @@ function send(res, status, body, extraHeaders = {}) {
   res.end(payload);
 }
 
+/**
+ * Serve a file from the built PWA. Returns true if it answered.
+ *
+ * Vite emits content-hashed asset names, so /assets/* is immutable-cacheable while index.html
+ * must never be cached — otherwise a deploy leaves clients holding a stale asset manifest.
+ * Unknown paths fall back to index.html so client-side routes survive a refresh.
+ */
+async function serveStatic(pathname, res, webRoot) {
+  if (!webRoot) return false;
+  // normalize + prefix check defeats ../ traversal before it reaches the filesystem.
+  const candidate = normalize(join(webRoot, pathname === '/' ? 'index.html' : pathname));
+  if (!candidate.startsWith(webRoot)) { send(res, 403, { error: 'forbidden' }); return true; }
+
+  let file = candidate;
+  try {
+    const info = await stat(file);
+    if (info.isDirectory()) file = join(file, 'index.html');
+  } catch {
+    file = join(webRoot, 'index.html'); // SPA fallback
+  }
+
+  let body;
+  try {
+    body = await readFile(file);
+  } catch {
+    return false; // no build present — let the caller 404 rather than pretending
+  }
+
+  const ext = extname(file);
+  const immutable = pathname.startsWith('/assets/');
+  res.writeHead(200, {
+    'Content-Type': MIME[ext] ?? 'application/octet-stream',
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-store',
+    ...SECURITY_HEADERS,
+  });
+  res.end(body);
+  return true;
+}
+
 async function readBody(req) {
   const chunks = [];
   let total = 0;
@@ -99,7 +157,9 @@ async function readBody(req) {
  * `adminToken` is the operator's login secret; only its digest is retained.
  * `secure` controls the cookie's Secure attribute — false only for local HTTP testing.
  */
-export function createHub({ store, adminToken, secure = true, allowedOrigins = [] }) {
+export function createHub({
+  store, adminToken, secure = true, allowedOrigins = [], webRoot = DEFAULT_WEB_ROOT,
+}) {
   if (!adminToken) throw new Error('adminToken is required');
   const adminDigest = hashSecretBytes(adminToken);
   const sessions = new Map(); // token -> expiresAtMs
@@ -135,7 +195,14 @@ export function createHub({ store, adminToken, secure = true, allowedOrigins = [
     }
 
     const route = matchRoute(req.method, url.pathname);
-    if (!route) { send(res, 404, { error: 'not_found' }); return; }
+    if (!route) {
+      // Not an API route — try the built PWA, then fall back to its index for client-side routes.
+      if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
+        if (await serveStatic(url.pathname, res, webRoot)) return;
+      }
+      send(res, 404, { error: 'not_found' });
+      return;
+    }
 
     try {
       if (route.pattern === '/api/auth/login') {

@@ -32,7 +32,7 @@ have never been tested against each other.
 | `roundtable-hub` | 24 | real — axum: auth, http, router, state, ws + 4 integration suites |
 | `roundtable-node` | 24 | real — Codex JSONL adapter, WS client w/ reconnect, IPC, keyring |
 | **cargo total** | **62** | **0 failures** |
-| `packages/web` | 2 test files | **unrun** — see build environment, below |
+| `packages/web` | **10** | real PWA — builds (24 modules, 205KB) and serves from the hub |
 | `packages/claude-channel` | — | real — 7 `roundtable_*` MCP tools, Zod schemas |
 
 ## Absorbed branch work (branches now deleted)
@@ -99,7 +99,7 @@ dispatch. Independently of that gate, there is nothing deployable yet:
 | `ops/ecosystem.config.cjs` | **written** — pm2, replacing the systemd unit; the box runs 15 other Node services this way |
 | `ops/backup.sh` | **written and smoke-tested** — `.backup` + `integrity_check` + sha256, single self-contained artifact |
 | `ops/install-macos.sh`, `ops/install-windows.ps1` | missing — these install the *node* agent, not the hub |
-| Serving the PWA | still missing — the Node hub returns 501 for it; the PWA is built but unserved |
+| Serving the PWA | **done** — hub serves the built PWA; index no-store, hashed assets immutable, SPA fallback |
 | Build location | **moot for the Node hub** — nothing to compile. `git pull` + `pm2 restart`. |
 
 On 2026-07-25 a deploy was attempted before checking any of this: a Rust toolchain was installed on
@@ -109,7 +109,7 @@ have come first.
 
 ## Node hub — in progress (2026-07-25)
 
-The port is underway at `tools/roundtable/packages/hub/`. **38 tests, 0 failures**, run with
+The port is underway at `tools/roundtable/packages/hub/`. **62 tests, 0 failures**, run with
 `node --test 'tools/roundtable/packages/hub/src/*.test.mjs'`.
 
 | Slice | State |
@@ -118,10 +118,10 @@ The port is underway at `tools/roundtable/packages/hub/`. **38 tests, 0 failures
 | `src/store.mjs` | done — applies `0001_initial.sql` verbatim; request-dedupe contract ported |
 | `src/ws.mjs` | done — hand-rolled RFC 6455 server; text/ping/pong/close/continuation, all 3 length forms |
 | `src/auth.mjs` | done — `__Host-roundtable`, sha256, constant-time compare, origin guard |
-| `src/server.mjs` | partial — all 16 routes declared, health + login/logout/me implemented, rest return 501 |
+| `src/server.mjs` | rooms/seats/messages live; handoffs, approvals, /api/nodes still 501 |
 | `main.mjs` | done — smoke-tested standalone: starts, creates the WAL database, serves `/healthz`, login 200 |
-| room/message/seat/handoff/approval handlers | **not started** |
-| serving the PWA | **not started** |
+| handoff / approval / nodes handlers | **not started** |
+| serving the PWA | **done** — verified against a live hub |
 
 **Zero dependencies, and that is forced rather than stylistic.** `node:sqlite` (built in since Node
 22.5; the box runs v26), `node:http`, `node:crypto`, and a hand-rolled WebSocket server because
@@ -203,12 +203,14 @@ Verified still absent:
 - **The cargo workspace lists members explicitly** rather than globbing `crates/*`. The glob
   picked up tooling scratch directories (`.claude/.cc-writes`) and failed the entire workspace
   with "failed to load manifest for workspace member". Add new crates to the list.
-- **No local package manager currently works for the web package.** `pnpm@11.12.0` (the version
-  pinned in the workspace CLAUDE.md) is blocked locally as a broken release; `npm install` fails
-  with "failed to copy trust settings of system certificate". The PWA's two test files
-  (`App.test.tsx`, `offline.test.ts`) are therefore **present but unrun**. This is a pre-existing
-  environment fault, not a Roundtable defect, and it is the reason the web row above reports test
-  *files* rather than a test count.
+- **npm works. An earlier revision of this file wrongly said it did not — corrected 2026-07-25.**
+  `pnpm@11.12.0` is genuinely blocked locally as a broken release, but `npm install` succeeds (170
+  packages), `vite build` succeeds (24 modules, 205KB), and `vitest` passes **10/10**. The earlier
+  "npm fails on certificate trust" conclusion came from `ERROR: failed to copy trust settings of
+  system certificate` lines, which are **shell-init noise printed by unrelated commands** — they
+  appear on a plain `node -e` too — not an npm failure. Filter them (`| grep -v 'trust settings'`)
+  rather than treating them as a fault.
+- The hub itself remains dependency-free regardless; only the PWA build needs npm.
 
 ## Next action
 
