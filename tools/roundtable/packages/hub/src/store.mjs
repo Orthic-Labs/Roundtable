@@ -182,12 +182,22 @@ export class Store {
    * scanned for @aliases — that is the wake rule the architecture locks, and it is what stops a
    * message from waking every seat in the room.
    */
-  postMessage({
+  postMessage(args) {
+    return this.tx(() => this.#postMessageLocked(args));
+  }
+
+  /**
+   * The body of postMessage, assuming a transaction is already open.
+   *
+   * Split out so createHandoff can compose message + handoff + delivery into ONE transaction —
+   * SQLite has no nested BEGIN, so calling postMessage from inside tx() would throw.
+   */
+  #postMessageLocked({
     id = randomUUID(), roomId, actorId, actorKind = 'human', kind = 'chat',
     body, replyTo = null, mentionSeatIds = [], deliveryReason = 'human_mention',
   }) {
     if (typeof body !== 'string' || body.length === 0) throw new StoreError('body_required');
-    return this.tx(() => {
+    {
       const room = this.#db.prepare('SELECT next_seq FROM rooms WHERE id = ? AND archived_at_ms IS NULL').get(roomId);
       if (!room) throw new StoreError('unknown_or_archived_room');
       const seq = room.next_seq;
@@ -209,7 +219,7 @@ export class Store {
       }
 
       return { message: this.#db.prepare('SELECT * FROM messages WHERE id = ?').get(id), deliveries };
-    });
+    }
   }
 
   /** Page a room's transcript. `afterSeq` is exclusive; results ascend by seq. */
@@ -226,6 +236,106 @@ export class Store {
 
   queuedDeliveries(seatId) {
     return this.#db.prepare("SELECT * FROM deliveries WHERE seat_id = ? AND state = 'queued' ORDER BY created_at_ms ASC").all(seatId);
+  }
+
+  // ---- handoffs ----------------------------------------------------------
+
+  /**
+   * A structured handoff: the only way one seat may wake another.
+   *
+   * Posts the handoff message, records the evidence, and queues a delivery for the target — all in
+   * one transaction, so a handoff can never exist without its wake, or vice versa.
+   */
+  createHandoff({
+    id = randomUUID(), roomId, fromSeatId, toSeatId, summary, evidence = {},
+  }) {
+    if (fromSeatId === toSeatId) throw new StoreError('handoff_to_self');
+    return this.tx(() => {
+      const from = this.#db.prepare('SELECT id, room_id FROM seats WHERE id = ?').get(fromSeatId);
+      const to = this.#db.prepare('SELECT id, room_id FROM seats WHERE id = ?').get(toSeatId);
+      if (!from || !to) throw new StoreError('unknown_seat');
+      if (from.room_id !== roomId || to.room_id !== roomId) throw new StoreError('seat_not_in_room');
+
+      const { message, deliveries } = this.#postMessageLocked({
+        roomId, actorId: fromSeatId, actorKind: 'agent', kind: 'handoff',
+        body: summary, mentionSeatIds: [toSeatId], deliveryReason: 'structured_handoff',
+      });
+      this.#db
+        .prepare('INSERT INTO handoffs (id, room_id, message_id, from_seat_id, to_seat_id, evidence_json, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, roomId, message.id, fromSeatId, toSeatId, JSON.stringify(evidence), Date.now());
+
+      return { handoff: this.#db.prepare('SELECT * FROM handoffs WHERE id = ?').get(id), message, deliveries };
+    });
+  }
+
+  listHandoffs(roomId) {
+    return this.#db.prepare('SELECT * FROM handoffs WHERE room_id = ? ORDER BY created_at_ms ASC').all(roomId);
+  }
+
+  // ---- approvals ---------------------------------------------------------
+
+  createApproval({
+    id = randomUUID(), roomId, seatId, deliveryId, providerRequestId,
+    description, inputPreview = '', decisions = ['allow', 'deny'],
+  }) {
+    const now = Date.now();
+    try {
+      this.#db
+        .prepare("INSERT INTO approvals (id, room_id, seat_id, delivery_id, provider_request_id, description, input_preview, decisions_json, state, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)")
+        .run(id, roomId, seatId, deliveryId, providerRequestId, description, inputPreview, JSON.stringify(decisions), now);
+    } catch (e) {
+      // The same provider request arriving twice is a retry, not a second approval.
+      if (/UNIQUE/.test(e.message)) throw new StoreError('approval_exists');
+      if (/FOREIGN KEY/.test(e.message)) throw new StoreError('unknown_seat_or_delivery');
+      throw e;
+    }
+    return this.#db.prepare('SELECT * FROM approvals WHERE id = ?').get(id);
+  }
+
+  /** Resolve once. A second resolution is refused so a late click cannot overturn a decision. */
+  resolveApproval(approvalId, resolution) {
+    return this.tx(() => {
+      const row = this.#db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
+      if (!row) throw new StoreError('unknown_approval');
+      if (row.state !== 'pending') throw new StoreError('already_resolved');
+      const decisions = JSON.parse(row.decisions_json);
+      if (!decisions.includes(resolution)) throw new StoreError('invalid_resolution');
+
+      this.#db
+        .prepare("UPDATE approvals SET state = 'resolved', resolution = ?, resolved_at_ms = ? WHERE id = ?")
+        .run(resolution, Date.now(), approvalId);
+      return this.#db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId);
+    });
+  }
+
+  pendingApprovals(roomId) {
+    return this.#db.prepare("SELECT * FROM approvals WHERE room_id = ? AND state = 'pending' ORDER BY created_at_ms ASC").all(roomId);
+  }
+
+  // ---- durable event log -------------------------------------------------
+
+  /**
+   * Append to the replay log. `targetNodeId` null means "every node".
+   * The autoincrement cursor is what lets a node resume exactly where it left off.
+   */
+  appendEvent({ eventId = randomUUID(), targetNodeId = null, type, payload }) {
+    this.#db
+      .prepare('INSERT INTO events (event_id, target_node_id, type, payload_json, created_at_ms) VALUES (?, ?, ?, ?, ?)')
+      .run(eventId, targetNodeId, type, JSON.stringify(payload ?? {}), Date.now());
+    return this.#db.prepare('SELECT * FROM events WHERE event_id = ?').get(eventId);
+  }
+
+  /** Events after `cursor`, addressed to this node or broadcast. Ascending, capped. */
+  eventsAfter(cursor = 0, { nodeId = null, limit = 200 } = {}) {
+    const capped = Math.min(Math.max(1, limit), 500);
+    return this.#db
+      .prepare('SELECT * FROM events WHERE cursor > ? AND (target_node_id IS NULL OR target_node_id = ?) ORDER BY cursor ASC LIMIT ?')
+      .all(cursor, nodeId, capped)
+      .map((e) => ({ ...e, payload: JSON.parse(e.payload_json) }));
+  }
+
+  latestCursor() {
+    return this.#db.prepare('SELECT COALESCE(MAX(cursor), 0) AS c FROM events').get().c;
   }
 
   /** Escape hatch for slices not yet ported. Prefer adding a method over reaching for this. */

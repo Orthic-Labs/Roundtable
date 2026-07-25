@@ -42,9 +42,17 @@ const STORE_ERROR_STATUS = {
   slug_taken: 409,
   alias_taken: 409,
   request_id_reused: 409,
+  approval_exists: 409,
+  already_resolved: 409,
   unknown_room_or_node: 404,
   unknown_or_archived_room: 404,
+  unknown_seat: 404,
+  unknown_seat_or_delivery: 404,
+  unknown_approval: 404,
   body_required: 400,
+  handoff_to_self: 400,
+  seat_not_in_room: 400,
+  invalid_resolution: 400,
 };
 
 /** Security headers applied to every response, matching the Rust hub. */
@@ -265,6 +273,16 @@ export function createHub({
           const detached = store.detachSeat(seatId);
           if (detached) send(res, 200, { ok: true });
           else send(res, 404, { error: 'unknown_seat' });
+          return;
+        }
+        case '/api/rooms/:room_id/handoffs': {
+          const body = await readBody(req);
+          send(res, 201, store.createHandoff({ ...body, roomId }));
+          return;
+        }
+        case '/api/approvals/:approval_id/resolve': {
+          const body = await readBody(req);
+          send(res, 200, { approval: store.resolveApproval(route.params.approval_id, body?.resolution) });
           return;
         }
         default:
