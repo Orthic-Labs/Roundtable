@@ -82,9 +82,10 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
 
 ## What is NOT done
 
-- **Claude seats do not work.** `packages/claude-channel` builds and its IPC tests pass, but
-  `main.rs` logs a Claude-provider delivery as explicitly unhandled. Codex only, for now. This is
-  the biggest remaining gap — the product is "multi-party rooms" and today it is single-provider.
+- **Claude seats work, partially.** A delivery reaches a connected channel over the node's 0600
+  unix socket and its reply posts back to the room — verified live with Codex and Claude seats
+  answering in the same room. Still unimplemented over IPC: handoff.create, approval.verdict,
+  session.join/leave, transcript.read/search (each returns an explicit error, not a fake success).
 - **Windows** — no installer, never built or run there.
 - The node never advances its own replay cursor (always reconnects at 0). Harmless now that the hub
   refuses to replay terminal deliveries, but it is not doing its job.
@@ -181,6 +182,6 @@ touching `codex.rs` or `fake-codex.mjs` again — it documents exactly what was 
 ## Suggested next step
 
 1. **nginx** — the one command above, Adrian's sudo.
-2. **Route Claude seats.** `main.rs` drops Claude deliveries into a catch-all; wire them through
-   `packages/claude-channel`'s IPC. Until then "multi-party rooms" is one party.
-3. Windows node installer.
+2. **Finish the IPC surface** — transcript.read/search and handoff.create need the node to reach
+   the hub for data it does not hold (a room roster, a transcript). Everything else is done.
+3. Windows node installer (Adrian is handling the timing on this one).

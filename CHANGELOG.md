@@ -87,9 +87,10 @@ Not root-caused; run files individually or in small batches.
 
 ### Known limitations
 
-- **Claude seats are not routed.** `packages/claude-channel` builds and its IPC tests pass, but
-  `main.rs` still logs a Claude delivery as explicitly unhandled. Codex only — so "multi-party
-  rooms" is currently one party.
+- **Claude seats work, partially.** Deliveries reach a connected channel and its replies post
+  back, verified live with both providers answering in one room. `handoff.create`,
+  `approval.verdict`, `session.join/leave` and `transcript.read/search` still return explicit
+  "not implemented" errors over IPC.
 - No Windows installer; never built or run on Windows.
 - The node never advances its own replay cursor.
 - Streaming deltas and several `ThreadItem` variants are not surfaced.

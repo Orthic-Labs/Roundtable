@@ -15,10 +15,11 @@ wins. Regenerate or correct them; do not resolve the conflict in their favour.
 
 ## Bottom line
 
-**DEPLOYED AND WORKING.** The hub runs on Hetzner under pm2, the Mac node runs under launchd, and
-a message posted to a room reaches a **real `codex app-server`** and comes back as the agent's real
-reply. Verified live on 2026-07-26 by posting "Say exactly: THIRD" and reading `THIRD` back out of
-the production database.
+**DEPLOYED AND WORKING, BOTH PROVIDERS.** The hub runs on Hetzner under pm2, the Mac node runs
+under launchd. A message to a Codex seat reaches a **real `codex app-server`** and comes back as
+the agent's real reply; a message to a Claude seat reaches a connected channel over the node's
+0600 unix socket and its reply posts back. Verified live on 2026-07-26 — `mac-codex` and
+`mac-claude` answering in the same room, read back out of the production database.
 
 **71 cargo tests, 0 failures. 100 Node hub tests, 0 failures** when run per-file or in small
 batches. `dispatch.test.mjs` now passes all 11 of its tests and exits cleanly — previously only its
@@ -55,7 +56,7 @@ HTTP route, because it mints credentials.
 | **cargo total** | **71** | **0 failures** |
 | `packages/hub` | **100** | green per-file and in small batches; the full 12-file run is still flaky |
 | `packages/web` | 10 | real PWA — builds (24 modules, 205KB) and serves from the hub |
-| `packages/claude-channel` | 2 | builds; IPC unit tests only — the node does NOT route Claude seats yet |
+| `packages/claude-channel` | 2 | builds; the node routes Claude deliveries to it and posts its replies |
 
 ## What real Codex found that the fixture never could
 
@@ -474,8 +475,10 @@ Still absent:
 
 - **Hub adoption of `rightkit-logs`** — `packages/hub/src/log.mjs` is schema-compatible with it but
   is a local zero-dependency implementation. The hub deliberately has no npm dependencies.
-- **Claude seats are not routed.** `packages/claude-channel` builds and its IPC unit tests pass,
-  but `main.rs` still logs a Claude-provider delivery as explicitly unhandled. Only Codex seats work.
+- **Claude seat coverage is partial.** Deliveries reach a connected channel and its replies post
+  back — verified live, both providers answering in one room. But `handoff.create`,
+  `approval.verdict`, `session.join/leave` and `transcript.read/search` return explicit
+  "not implemented" errors over IPC; only `message.reply` and `ping` do real work.
 - **Windows node** — no installer, never built or run on Windows.
 - **The node never advances its own replay cursor.** It echoes back whatever the handshake gave it,
   so it always reconnects at 0. Harmless now that the hub refuses to replay terminal deliveries,
@@ -501,5 +504,6 @@ Still absent:
 
 1. **nginx** — Adrian's sudo, one command (see HANDOVER.md). Until then the node reaches the hub
    over an SSH tunnel rather than `wss://roundtable.spoares.com`.
-2. Route Claude seats through `packages/claude-channel` so the room is genuinely multi-party.
-3. Windows node installer.
+2. Finish the IPC surface — transcript.read/search and handoff.create need the node to reach the
+   hub for data it does not hold (a room roster, a transcript).
+3. Windows node installer (Adrian is handling the timing).
