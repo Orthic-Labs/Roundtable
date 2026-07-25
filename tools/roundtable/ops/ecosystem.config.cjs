@@ -32,8 +32,13 @@ module.exports = {
     max_memory_restart: '512M',
     env: {
       NODE_ENV: 'production',
-      // Bind to the Docker gateway so the containerised nginx can reach it; not 0.0.0.0.
-      ROUND_TABLE_BIND: '172.22.0.1:8460',
+      // 0.0.0.0, matching every other service on this box (rightapps-api :3301, the brand
+      // sites :4211-4215). Binding ONLY to the docker gateway 172.22.0.1 looked tighter but the
+      // containerised nginx could not reach it — TLS connected and the proxy then hung until
+      // timeout, while the same container reached :4211 fine. Not publicly exposed: the host
+      // firewall does not open 8460 and Cloudflare fronts the only route in (verified after
+      // changing this — 8460 is refused from the public internet).
+      ROUND_TABLE_BIND: '0.0.0.0:8460',
       // Under ~, not /var/lib: the vendure user owns this and needs no sudo to back it up or
       // move it. Nothing on this box requires the database to live outside the home directory.
       ROUND_TABLE_DATABASE: '/home/vendure/.local/share/roundtable/roundtable.sqlite3',
