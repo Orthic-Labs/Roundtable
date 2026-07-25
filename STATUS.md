@@ -134,10 +134,34 @@ For Rust, and not to be dismissed:
   wants a single binary with no runtime, and touches the OS keychain. That is Rust earning its
   keep; the hub is not.
 
-**Recommended sequencing:** do not rewrite against an unsettled protocol. The wire framing is
-unresolved, so a port now would be rewritten twice. Settle the framing first, prove the thing runs
-end to end, then port the hub to Node/TypeScript and keep the node in Rust — a clean split along
-the line where each language actually pays.
+**Why this keeps surfacing:** a Rust hub means an `x86_64-unknown-linux-gnu` binary has to come
+from somewhere. There are exactly three sources and all three are closed — build on the box (ruled
+out), build in CI (ruled out), cross-compile from the Mac (`arm64`, no `zig`/`cross`/`docker`
+installed). The language choice *is* the deployment problem.
+
+**Measured weight of a Rust build** (2026-07-25): `target/` 1.6G debug+tests, `~/.cargo` 1.9G, 138
+crates in the lockfile. The partial build on Hetzner had already written 276M of `target/` plus a
+356M toolchain before it was killed. Hosting a Rust hub on that box means carrying ~1.5–2G of
+toolchain, registry cache, and build artifacts permanently, and contending for 4 cores with 17 live
+services on every deploy.
+
+**Recommendation: port the hub to Node/TypeScript. Keep `roundtable-node` in Rust.**
+
+An earlier revision of this file said "do not rewrite against an unsettled protocol; settle the
+wire framing first." That was wrong and is withdrawn. The framing gap is not a blocker to the
+port — it is *resolved by* the port. The Rust node is written, tested, and staying, so its framing
+(`{version, event_id, sent_at_ms, type, payload}`) is the one that survives; the new hub is simply
+written to speak it. Doing the port is what settles the protocol, so there is no double work to
+avoid.
+
+The port's real price is the ~2,000-line store and ~960-line hub with their 33 tests. That is
+mitigated by the schema already existing (`migrations/0001_initial.sql` is the contract) and the
+protocol already being specified — a Node hub over `better-sqlite3` re-expresses known SQL against
+a known wire format rather than designing anything new.
+
+What the port buys, permanently: no toolchain, registry cache, or build artifacts on the server; no
+cross-compilation; and `git pull` + `pm2 restart` deployment, identical to the 15 Node services the
+box already runs.
 
 ## Genuinely-absent spec items
 
