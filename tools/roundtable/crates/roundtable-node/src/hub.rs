@@ -14,6 +14,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{sleep, timeout};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -87,6 +88,71 @@ impl HubTransport for TcpHubChannel {
     async fn close(&self) -> NodeResult<()> {
         let mut w = self.writer.lock().await;
         w.shutdown().await?;
+        Ok(())
+    }
+}
+
+/// WebSocket transport — the production path.
+///
+/// `TcpHubChannel` above speaks raw TCP with newline framing and is what the local
+/// `fixtures/hub/fake-hub.mjs` uses. It cannot traverse nginx, so it is a test transport only.
+/// This one carries the same JSON frames as WebSocket text messages, which is what the hub
+/// exposes at `/node/connect` and what nginx proxies with the Upgrade/Connection pair.
+pub struct WsHubChannel {
+    sink: Mutex<futures_util::stream::SplitSink<WsStream, WsMessage>>,
+    stream: Mutex<futures_util::stream::SplitStream<WsStream>>,
+}
+
+type WsStream = tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+impl WsHubChannel {
+    /// Dial `url` (ws:// or wss://) and complete the handshake.
+    pub async fn connect(url: &str) -> NodeResult<Self> {
+        let (ws, _response) = tokio_tungstenite::connect_async(url)
+            .await
+            .map_err(|e| NodeError::InvalidFrame(format!("websocket connect {url}: {e}")))?;
+        let (sink, stream) = futures_util::StreamExt::split(ws);
+        Ok(Self { sink: Mutex::new(sink), stream: Mutex::new(stream) })
+    }
+}
+
+#[async_trait]
+impl HubTransport for WsHubChannel {
+    async fn send_frame(&self, frame: &[u8]) -> NodeResult<()> {
+        use futures_util::SinkExt;
+        let text = String::from_utf8(frame.to_vec())
+            .map_err(|e| NodeError::InvalidFrame(format!("frame is not utf8: {e}")))?;
+        let mut sink = self.sink.lock().await;
+        sink.send(WsMessage::Text(text.into()))
+            .await
+            .map_err(|e| NodeError::InvalidFrame(format!("websocket send: {e}")))?;
+        Ok(())
+    }
+
+    async fn recv_frame(&self) -> NodeResult<Option<Vec<u8>>> {
+        use futures_util::StreamExt;
+        let mut stream = self.stream.lock().await;
+        loop {
+            match stream.next().await {
+                Some(Ok(WsMessage::Text(t))) => return Ok(Some(t.as_bytes().to_vec())),
+                Some(Ok(WsMessage::Binary(b))) => return Ok(Some(b.to_vec())),
+                // Ping/Pong are handled by tungstenite; Close ends the stream. Keep waiting on
+                // anything else rather than reporting a spurious disconnect to the reconnect loop.
+                Some(Ok(WsMessage::Close(_))) | None => return Ok(None),
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => {
+                    return Err(NodeError::InvalidFrame(format!("websocket recv: {e}")))
+                }
+            }
+        }
+    }
+
+    async fn close(&self) -> NodeResult<()> {
+        use futures_util::SinkExt;
+        let mut sink = self.sink.lock().await;
+        let _ = sink.close().await;
         Ok(())
     }
 }

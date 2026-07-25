@@ -19,10 +19,9 @@ wins. Regenerate or correct them; do not resolve the conflict in their favour.
 protocol, and PWA work that previously lived only on unmerged branches has been absorbed into
 `main`, and those branches are deleted.
 
-One integration gap is real and documented rather than papered over: **the node binary cannot
-connect to any hub yet** — it never constructs its own client, and it has no WebSocket transport
-(see below). Everything compiles and every suite passes; they have never been tested against each
-other, and the passing suites do not imply they could be.
+**The Rust node now connects to the Node hub over WebSocket** — verified 2026-07-25 by running the
+real `roundtable-node` binary against a live hub and reading `{"connected":1}` back from the hub's
+own `/api/nodes`. The three gaps recorded below are closed.
 
 ## Measured test counts on `main`
 
@@ -51,53 +50,36 @@ branches. All are now in `main`:
 
 A full `git bundle --all` backup was taken and verified before any deletion.
 
-## Known gap: the node cannot connect to any hub yet (widened 2026-07-25)
+## Node↔hub connection — CLOSED 2026-07-25
 
-Previously recorded here as "different wire framings". On inspection it is three separate gaps,
-and the framing one is now the *smallest*:
+Recorded earlier as "different wire framings". That understated it: there were three gaps, and the
+framing was the smallest. All three are now fixed, and the fix is verified by running the real
+binary rather than by a passing suite.
 
-1. **`roundtable-node`'s binary never connects.** `crates/roundtable-node/src/main.rs` loads the
-   config, state, and token, logs `roundtable-node ready`, then ends with
-   `let _ = (cfg, state, token); Ok(())`. The `HubClient` in `hub.rs` is real and has 24 passing
-   tests, but nothing in the binary constructs it. The node is a stub that reports success.
-2. **The node has no WebSocket transport.** Its only `HubTransport` implementation is
-   `TcpHubChannel` — raw TCP with NDJSON framing — and there is no `tokio-tungstenite` or
-   equivalent in `crates/roundtable-node/Cargo.toml`. The config field is named `hub_url` and the
-   test fixture uses `ws://localhost`, but that is aspirational: nothing speaks WebSocket.
-   The Node hub, the architecture, and nginx all assume outbound WSS.
-3. **The framings differ** (below), which only matters once 1 and 2 are solved.
+| Was broken | Fix |
+|---|---|
+| **The node binary never connected.** `main.rs` loaded config, logged `roundtable-node ready`, then ended with `let _ = (cfg, state, token); Ok(())`. `HubClient` was real and tested, but nothing constructed it — the binary reported success and did nothing. | `main.rs` now builds a transport factory and constructs `HubClient`, then drains `next_event()` for the life of the process. |
+| **No WebSocket transport existed.** The only `HubTransport` was `TcpHubChannel` (raw TCP, NDJSON) with no tungstenite dependency, while the hub, the architecture, and nginx all assume outbound WSS. `hub_url` and the `ws://` fixture were aspirational. | `WsHubChannel` added (`tokio-tungstenite`, rustls). The factory picks WS for `ws://`/`wss://` and keeps raw TCP for a bare `host:port`, so the local fixture path still works. |
+| **The framings differed.** | Moot: the Node hub was written to the Rust node's framing — `{version, event_id, sent_at_ms, type, payload}` with a nested payload — so both now speak it. |
 
-Consequence: **no end-to-end Mac↔hub round trip is possible today**, and the node's green test
-suite does not contradict that — it exercises `HubClient` against a TCP fixture
-(`fixtures/hub/fake-hub.mjs`), not the binary and not a WebSocket.
+**Verification (not a test — the actual binaries):** the real `roundtable-node` was run against a
+live Node hub with `hub_url: ws://127.0.0.1:PORT/node/connect`; the node logged
+`roundtable-node connecting` and stayed up, and the hub's own `/api/nodes` returned
+`{"connected":1}`.
 
-Two ways to close it, neither started:
+Two implementation notes worth keeping:
 
-- **Add a WebSocket transport to the Rust node** (a `tokio-tungstenite` dependency plus a second
-  `HubTransport` impl) and wire `main.rs` to construct `HubClient`. This is the production shape —
-  WSS is what traverses nginx.
-- **Teach the Node hub to also accept raw TCP NDJSON** on a separate port. Much smaller, since the
-  wire codec already exists and the framing is line-delimited JSON, and it would prove the protocol
-  between the real Rust node and the Node hub today. But TCP cannot traverse nginx, so it is a
-  local-testing bridge, not the deployment path.
+- The driver requests a transport **synchronously** (`(self.transport_factory)()`) while dialling a
+  WebSocket is async, so `main.rs` uses `block_in_place` + `Handle::block_on`. That needs the
+  multi-thread runtime (`#[tokio::main]` provides it) and runs once per connect attempt, not per
+  frame. Changing the factory to return a future would be cleaner but breaks every existing
+  `HubClient::new` caller.
+- The node previously installed **no tracing subscriber**, so every `tracing::info!` was discarded
+  and a connected node was indistinguishable from a wedged one. It now initialises `fmt` +
+  `EnvFilter`, defaulting to `info`.
 
-## Known gap: node and hub wire framings
-
-This is the one place the two eras did not reconcile, and it is deliberately **not** hidden
-behind a compiling build:
-
-- `roundtable_protocol::WsEnvelope` (hub side) is `{version, event_id, sent_at_ms, ...flattened
-  event}` — the event fields sit at the top level, discriminated by a `type` tag.
-- `roundtable-node`'s client expects `{version, event_id, sent_at_ms, type, payload: {...}}` —
-  a *nested* payload.
-
-Node therefore keeps a private `Envelope<T>` in `crates/roundtable-node/src/hub.rs`, documented
-in place, rather than importing `WsEnvelope`. This keeps node's 24 tests and its
-`fixtures/hub/fake-hub.mjs` honest: they exercise the framing node actually speaks.
-
-**Do not "fix" this by swapping in `WsEnvelope`** without also porting the fixtures and adding a
-real node↔hub integration test. Substituting the type alone would produce a green build that
-fails on the wire, which is worse than the current explicit gap.
+**Still not proven:** a delivery travelling all the way from a browser message to a Codex/Claude
+session and back. The transport is up; seat routing on the node side is where that continues.
 
 `PROTOCOL_VERSION` widened `u8 → u16` in the absorbed protocol; `NodeError::ProtocolVersion` was
 widened to match.
