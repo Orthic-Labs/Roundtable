@@ -104,3 +104,42 @@ test('a still-outstanding delivery IS replayed on reconnect', async () => {
 
   await hub.close();
 });
+
+test('a reconnecting node supersedes its previous connection', async () => {
+  // A stale connection for the same node silently swallows deliveries: dispatch() picks the first
+  // matching connection and reports success, so the delivery is marked `sent` while the live node
+  // never sees it. Observed live after an SSH tunnel dropped — two node.connected for one node_id
+  // with one disconnect between them, and two messages that simply vanished.
+  const { store, hub, room, token, node, seat } = fixture();
+  const addr = await hub.listen(0);
+
+  const first = new WebSocket(`ws://127.0.0.1:${addr.port}/node/connect`);
+  await once(first, 'open');
+  first.send(hello(node.id, token));
+  await once(first, 'message');
+  assert.equal(hub.connectionCount, 1);
+
+  // Second connection for the SAME node, without the first having closed.
+  const second = new WebSocket(`ws://127.0.0.1:${addr.port}/node/connect`);
+  await once(second, 'open');
+  const frames = [];
+  second.addEventListener('message', (e) => frames.push(JSON.parse(e.data.toString())));
+  second.send(hello(node.id, token));
+  await new Promise((r) => setTimeout(r, 150));
+
+  assert.equal(hub.connectionCount, 1, 'the stale connection must be evicted, not kept alongside');
+
+  // The delivery must reach the LIVE connection.
+  store.postMessage({
+    roomId: room.id, actorId: crypto.randomUUID(), body: 'work', mentionSeatIds: [seat.id],
+  });
+  assert.equal(hub.flushDeliveries(), 1);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(
+    frames.filter((f) => f.type === 'delivery.assign').length, 1,
+    'the surviving connection must be the one that receives the delivery',
+  );
+
+  second.close();
+  await hub.close();
+});

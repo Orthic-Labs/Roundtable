@@ -421,6 +421,20 @@ export function createHub({
         helloReceived = true;
         conn.meta.nodeId = nodeId;
         conn.meta.cursor = Number(resumeCursor ?? 0) || 0;
+        // ONE connection per node. A reconnecting node supersedes its previous connection, and
+        // any earlier one is dead by definition — but a socket killed abruptly (tunnel dropped,
+        // laptop slept, network flap) does not always surface a close event promptly, so the hub
+        // can be left holding a stale entry. dispatch() picks the FIRST connection matching the
+        // node and returns true, so a stale entry silently swallows deliveries: they are marked
+        // `sent` and the live node never sees them. Observed live — two node.connected for one
+        // node_id with a single disconnect between them, and two messages that vanished.
+        for (const existing of nodeConnections) {
+          if (existing !== conn && existing.meta?.nodeId === nodeId) {
+            nodeConnections.delete(existing);
+            log.info('node.superseded', { node_id: nodeId });
+            try { existing.close(1000, 'superseded by a newer connection'); } catch { /* already gone */ }
+          }
+        }
         nodeConnections.add(conn);
         log.info('node.connected', { node_id: nodeId, resume_cursor: conn.meta.cursor });
         // Drain anything queued while this node was away, rather than waiting for the next
