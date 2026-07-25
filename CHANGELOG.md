@@ -2,7 +2,95 @@
 
 All notable changes to this repo. Categories follow [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] — corrections, 2026-07-25
+## [Unreleased] — Node hub port + first real end-to-end proof, 2026-07-25
+
+Full narrative in `HANDOVER.md`; measured detail in `STATUS.md`. This entry is the chronological
+summary of one day's work, in order.
+
+### Decided
+
+- **Port the hub from Rust to Node/TypeScript; keep `roundtable-node` in Rust.** The hub is
+  I/O-bound, the deploy target (Hetzner) runs Node already, and there is no viable Rust deploy
+  path: no builds on the box, no hosted CI (standing workspace policy), and no cross-compile
+  tooling from this arm64 Mac to the box's x86_64. The node stays Rust — a small login-time
+  binary with no runtime, where Rust earns its keep.
+- **`roundtable.spoares.com`, a subdomain — not `spoares.com/roundtable`.** The path mount is
+  operationally simpler, but same-origin would put Roundtable's session cookie on the same
+  trust boundary as the memory dashboard, and `Path=/roundtable` does not fix that (cookie path
+  matching is by request path, not page path).
+
+### Added
+
+- **`packages/hub`** — a complete Node.js port of the hub, zero npm dependencies
+  (`node:sqlite`, `node:http`, `node:crypto`, a hand-rolled RFC 6455 WebSocket server — pnpm is
+  broken locally and npm fails on certificate trust, so dependency-free was the only thing
+  buildable here). All 16 HTTP routes, session auth, the WebSocket upgrade and node handshake,
+  rooms/seats/messages, handoffs/approvals, durable delivery dispatch with reconnect replay, and
+  serving the built PWA directly.
+- **`ops/ecosystem.config.cjs`, `ops/nginx-roundtable.conf`, `ops/backup.sh`** — pm2 config, the
+  nginx vhost (with its Dockerfile-COPY safety check), and a `.backup`-based SQLite backup
+  script. Locally smoke-tested; none has touched Hetzner (gated behind an explicit
+  `DEPLOY TASK 11`, not yet given).
+- **`CodexAdapter` response correlation and `execute()`** in `roundtable-node` — a reader-loop
+  task that resolves pending JSON-RPC requests and routes turn-lifecycle notifications to a
+  seat, plus a new `CodexCommand::CreateThread` variant (the enum previously had no way to
+  create a seat's first thread).
+- **`main.rs` now does something.** It was a stub that logged "ready" and exited. It now
+  connects to the hub over a real `WsHubChannel`, and its event loop handles `DeliveryAssign` by
+  routing to the seat's `CodexAdapter` and posting the resulting reply back to the hub.
+- **`tools/agent-room/`** — the multi-party agent+human broker, absorbed from a branch that
+  predated this repo's proper git connection.
+
+### Fixed — five real wire-protocol bugs, found only by driving a real binary against a real Codex process
+
+No amount of JS-only or Rust-only testing caught any of these: each side's tests were internally
+self-consistent with the same wrong shared assumption.
+
+1. The hub never sent `hello.accepted` at all.
+2. Once added, the handshake direction was backwards — sent unprompted instead of waiting for
+   the node's `node.hello` first.
+3. Every `HubCommand`/`HubEvent` payload is wrapped one level deeper than assumed: Rust's serde
+   default externally-tagged enum representation nests each variant's fields under its own
+   snake_case key (e.g. `{"hello": {node_id, ...}}`), not flat. `DeliveryAssign` also needed its
+   full field set (`delivery`, `message`, `parent`, `context_messages`, `room_slug`,
+   `room_title`, `room_objective`, `seats`), not the two-field shape every JS test asserted on.
+4. `Message.actor_id` is typed `Uuid` — a human-readable placeholder like `'adrian'` fails
+   deserialization. Every actor, human included, needs a genuine UUID on the wire.
+5. The seat default state, `'attached'`, isn't a valid `SeatState` variant; defaulted to `'idle'`.
+
+Plus two bugs found along the way, both fixed permanently rather than left as scaffolding:
+
+- **Silent frame drops.** `roundtable-node`'s event-reader loop discarded any undeserializable
+  `HubEvent` via bare `.ok()`, with zero logging — the reason the five bugs above took as long
+  as they did to find. Now logs the frame kind and the real serde error.
+- **A crash on disconnect.** An abrupt node disconnect (`ECONNRESET`) crashed the entire Node hub
+  process, not just that connection — an unhandled `EventEmitter` `'error'` event. Fixed with a
+  no-op listener in `attachWebSocket`.
+
+### Verified
+
+- `cargo test --workspace`: 66/66 (was 62 at the start of the day).
+- The 8 stable `packages/hub` test files together: 72/72.
+- **`e2e-rust-node.test.mjs`**: the real compiled `roundtable-node` binary, a real Node hub, and
+  the real Codex fixture — a message posted in a room reaches Codex through a real turn and the
+  reply is persisted back as an `agent`-authored message. 1/1 pass.
+
+### Known limitation
+
+The reply that lands is a synthetic status string (`"[roundtable-node] turn Completed..."`), not
+Codex's real output. `CodexEvent::body` stays empty because App Server's actual text-delta field
+shape isn't documented anywhere available here, and guessing it would repeat the exact mistake
+this day's investigation was about. The transport and routing are proven; relaying real agent
+content is the next gap.
+
+### Known, unresolved (not a protocol defect)
+
+`dispatch.test.mjs`'s reconnect test reproducibly hangs `node --test` when run anywhere but first
+in a batch. Confirmed via extensive isolation to be a test-runner/environment interaction on this
+machine — every test passes alone, the real e2e test is unaffected. Run this file alone or last
+in a batch until diagnosed.
+
+### Earlier the same day — repo reconciliation corrections
 
 ### Fixed
 
