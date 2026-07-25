@@ -48,14 +48,25 @@ export class Store {
     // caught it until a real restart on the box did.
     const version = Number(Object.values(db.prepare('PRAGMA user_version').get())[0] ?? 0);
     if (version === 0) {
-      let sql;
-      try {
-        sql = readFileSync(migrationPath, 'utf8');
-      } catch (e) {
-        throw new StoreError(`cannot read migration at ${migrationPath}: ${e.message}`);
+      // A database created by the pre-guard code is fully migrated but still reports version 0.
+      // Re-running the migration on it throws "table rooms already exists"; stamping it is
+      // correct, because the schema it already has IS version 1. Without this, every database
+      // written before the guard existed is permanently unopenable.
+      const migrated = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rooms'")
+        .get();
+      if (migrated) {
+        db.exec('PRAGMA user_version = 1');
+      } else {
+        let sql;
+        try {
+          sql = readFileSync(migrationPath, 'utf8');
+        } catch (e) {
+          throw new StoreError(`cannot read migration at ${migrationPath}: ${e.message}`);
+        }
+        db.exec(sql);
+        db.exec('PRAGMA user_version = 1');
       }
-      db.exec(sql);
-      db.exec('PRAGMA user_version = 1');
     }
     return new Store(db);
   }

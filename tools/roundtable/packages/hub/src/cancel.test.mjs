@@ -172,3 +172,23 @@ test('a store can be reopened — the migration is not re-applied on restart', (
   third.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('a pre-guard database (migrated, user_version 0) is adopted, not re-migrated', () => {
+  // Exactly the box's situation: the file was created before the user_version guard existed, so
+  // it has every table AND reports version 0. Re-running the migration on it throws; stamping it
+  // is correct because the schema it already has IS version 1.
+  const dir = mkdtempSync(join(tmpdir(), 'rt-legacy-'));
+  const path = join(dir, 'legacy.sqlite3');
+
+  const first = Store.open(path);
+  const room = first.createRoom({ slug: 'legacy', title: 'Legacy' });
+  first.raw.exec('PRAGMA user_version = 0'); // simulate the pre-guard file
+  first.close();
+
+  const reopened = Store.open(path); // must not throw
+  assert.equal(reopened.getRoom(room.id).slug, 'legacy');
+  assert.equal(Number(Object.values(reopened.raw.prepare('PRAGMA user_version').get())[0]), 1,
+    'the adopted database must be stamped so the next open takes the fast path');
+  reopened.close();
+  rmSync(dir, { recursive: true, force: true });
+});
