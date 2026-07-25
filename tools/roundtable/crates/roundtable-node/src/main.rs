@@ -32,7 +32,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_bytes = std::fs::read(&config_path)?;
     let cfg: NodeConfig = serde_json::from_slice(&config_bytes)?;
     let state = Arc::new(Mutex::new(NodeState::load_or_default(&cfg.state_path)?));
-    let token = BearerToken::load("ROUNDTABLE_NODE_TOKEN", &PathBuf::from("node.token"))?;
+    // ROUNDTABLE_NODE_TOKEN_FILE keeps the secret out of the working directory (which is also the
+    // data directory, holding state.json and the IPC socket) and out of the process environment,
+    // where any child — including the Codex app-server this spawns — would inherit it. Mirrors the
+    // hub's ROUND_TABLE_ADMIN_TOKEN_FILE. Falls back to ./node.token for local runs.
+    let token_path = std::env::var("ROUNDTABLE_NODE_TOKEN_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("node.token"));
+    let token = BearerToken::load("ROUNDTABLE_NODE_TOKEN", &token_path)?;
 
     let url = cfg.hub_url.clone();
 
