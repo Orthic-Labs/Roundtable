@@ -1,4 +1,16 @@
-# Windows unblock — validation of WINDOWS-HANDOFF.md + the steps
+# Windows unblock — DONE 2026-07-26. Kept as the record of how, not as a to-do list.
+
+> **Everything below was completed.** `6fc9b70 feat(node): support Windows Roundtable nodes` shipped
+> the `#[cfg(windows)] spawn_listener` with the SDDL owner-only DACL, `tests/ipc_windows_integration.rs`,
+> and `ops/install-windows.ps1`. Verified on this Mac after pulling: **76 cargo tests, 0 failures** —
+> the Windows arm did not disturb the Unix one. The Windows node is enrolled and live: hub log shows
+> `node.connected` for `21da2b39-67f8-4ff3-85db-4fae7e320102`.
+>
+> Read this for WHY the shape is what it is (especially the bypass-before-gate ordering and the
+> `into_split` trap). Do not read it as work outstanding.
+
+---
+
 
 2026-07-26. Every claim in `WINDOWS-HANDOFF.md` was checked against the repo on this Mac; the
 verdict is below, then the ordered steps.
@@ -23,7 +35,7 @@ behaviour-preserving. What remains on Windows is `#[cfg(windows)] fn spawn_liste
 | claude-channel needs no change for pipes | `packages/claude-channel/src/ipc.ts:19` passes `socketPath` straight to `net.connect()`; Node accepts `\\.\pipe\...` there | Confirmed |
 | Working IPC methods are `message.reply` + `ping`; transcript/handoff return "not implemented" | `main.rs:295-343`, `ipc.rs:222` | Confirmed |
 | replay.test.mjs wedge is pre-existing | `STATUS.md:94-140` (same numbers) | Confirmed — not a Windows problem |
-| `install-macos.sh` is the model; `enrol-node.mjs` exists | `ops/` listing | Confirmed; `ops/install-windows.ps1` does not exist yet |
+| `install-macos.sh` is the model; `enrol-node.mjs` exists | `ops/` listing | Confirmed at the time; `ops/install-windows.ps1` has since been written and shipped |
 
 ## Three things the handoff understates (found in this investigation)
 
@@ -79,7 +91,7 @@ These don't change the plan's shape, but whoever implements it will hit all thre
   `#[cfg(unix)] IpcServer::spawn_listener`, and `start()` still binds synchronously so failures
   surface from `start()`.
 
-**What is left, on the Windows machine:**
+**What was left at the time, and what Windows then did (all of it, in `6fc9b70`):**
 
 1. Write `#[cfg(windows)] fn spawn_listener` with the same signature as the Unix one. The build
    currently fails there with "no method named `spawn_listener`", which points exactly at it. Loop
@@ -116,7 +128,7 @@ codex app-server generate-json-schema --experimental --out <tmpdir>
 Diff against `fixtures/app-server/schema/`. Same → proceed. Different → regenerate fixtures and
 review the diff; do not assume.
 
-### Step 3 — write `ops/install-windows.ps1` (mirror of `install-macos.sh`)
+### Step 3 — `ops/install-windows.ps1` (mirror of `install-macos.sh`) — DONE, shipped in `6fc9b70`
 
 The macOS script's five jobs translate as:
 
