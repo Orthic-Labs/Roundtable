@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! IPC server integration tests: spawn a Unix socket server, connect via raw stream,
 //! and verify snake_case framing + 0o600 perms. All tests are sandbox-aware and
 //! skip cleanly when the environment denies the underlying syscalls.

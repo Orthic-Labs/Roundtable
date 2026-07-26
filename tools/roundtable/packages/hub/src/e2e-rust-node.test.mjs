@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { writeFile, mkdtemp } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,9 @@ import { Store } from './store.mjs';
 
 // packages/hub/src/ -> packages/hub -> packages -> tools/roundtable (the Cargo workspace root)
 const RUST_WORKSPACE = fileURLToPath(new URL('../../..', import.meta.url));
-const NODE_BINARY = join(RUST_WORKSPACE, 'target', 'debug', 'roundtable-node');
+const NODE_BINARY = join(
+  RUST_WORKSPACE, 'target', 'debug', `roundtable-node${process.platform === 'win32' ? '.exe' : ''}`,
+);
 const FIXTURE_CODEX = join(RUST_WORKSPACE, 'fixtures', 'app-server', 'fake-codex.mjs');
 
 test('E2E: the real compiled roundtable-node binary delivers a message to Codex and posts a reply', async (t) => {
@@ -51,8 +54,11 @@ test('E2E: the real compiled roundtable-node binary delivers a message to Codex 
   const config = {
     hub_url: `ws://127.0.0.1:${addr.port}/node/connect`,
     node_id: dbNode.id,
-    hostname: 'mac', os: 'macos', version: '0.1.0',
-    ipc_socket_path: join(workDir, 'ipc.sock'),
+    hostname: process.platform === 'win32' ? 'windows' : 'mac',
+    os: process.platform === 'win32' ? 'windows' : 'macos', version: '0.1.0',
+    ipc_socket_path: process.platform === 'win32'
+      ? `\\\\.\\pipe\\roundtable-e2e-${randomUUID()}`
+      : join(workDir, 'ipc.sock'),
     state_path: join(workDir, 'state.json'),
     codex_command: ['node', FIXTURE_CODEX],
     codex_cwd: null,
