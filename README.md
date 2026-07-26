@@ -1,9 +1,9 @@
 # Roundtable
 
-> **TL;DR:** Roundtable lets you continue existing Codex & Claude coding sessions from another device without moving provider API keys or full hidden session state into a cloud agent service.
+> **TL;DR:** Roundtable lets you steer live local Codex & Claude coding sessions from another device without moving provider API keys or full hidden session state into a cloud agent service.
 
 Roundtable turns agent sessions already running on your machines into authenticated rooms. Send a
-message from phone, laptop or browser; local node holding real session delivers it to Codex or
+message from phone, laptop or browser; the local node holding real session delivers it to Codex or
 Claude, then posts reply back to shared room.
 
 Hub coordinates messages. Your machine still runs agent.
