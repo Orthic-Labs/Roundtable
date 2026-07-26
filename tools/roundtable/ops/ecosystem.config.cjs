@@ -44,6 +44,14 @@ module.exports = {
       ROUND_TABLE_DATABASE: '/home/vendure/.local/share/roundtable/roundtable.sqlite3',
       ROUND_TABLE_ADMIN_TOKEN_FILE: '/home/vendure/.config/roundtable/admin-token',
       ROUND_TABLE_ORIGINS: 'https://roundtable.spoares.com',
+      // Cloudflare Access fronts this host, so a verified Access assertion authenticates the
+      // operator and the admin-token login is not asked for a second time. Neither value is a
+      // secret: both appear in the public Access login redirect
+      // (/cdn-cgi/access/login/<host>?kid=<aud>). The SECRET half is Cloudflare's signing key,
+      // which is never here — the hub fetches the team's PUBLIC keys and verifies against those.
+      // Unset these and the feature switches off, leaving the admin token as the only way in.
+      ROUNDTABLE_ACCESS_TEAM_DOMAIN: 'adrdsouza.cloudflareaccess.com',
+      ROUNDTABLE_ACCESS_AUD: 'd5ede6f630edb801c03529809fec76203320b781c9f5eb2d7bca892ab1dadc40',
     },
     out_file: '/home/vendure/.pm2/logs/roundtable-hub-out.log',
     error_file: '/home/vendure/.pm2/logs/roundtable-hub-error.log',
