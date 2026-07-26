@@ -26,7 +26,14 @@ const ACCOUNT = '03ae77ccd7a07bcbb2dcfde47fa7ba3a';
 const API = 'https://api.cloudflare.com/client/v4';
 const SOURCE_APP_DOMAIN = 'spoares.com'; // the app whose policy we clone
 const BYPASS_PATH = 'roundtable.spoares.com/node/connect';
-const TARGETS = ['roundtable.spoares.com', 'api.spoares.com'];
+// roundtable ONLY. api.spoares.com was on this list and was REMOVED 2026-07-26: it is the Right
+// Suite updater + licensing API that every shipped desktop app calls home to (rightapps-register
+// DEFAULT_API_BASE; RIGHT-SUITE-RELEASE-PIPELINE; ScrapeRight uses it directly per
+// LICENSING-RUNBOOK). Verified live: /v1/health 200, viewright latest.json 200. Its bare `/` is
+// 404, which makes it LOOK idle — it is not. Access in front of it would 302 every installed
+// app's updater to a login it cannot complete. It is public by design and protected by license
+// tokens, not by network gating. Do not add it back.
+const TARGETS = ['roundtable.spoares.com'];
 
 const APPLY = process.argv.includes('--apply');
 const token = process.env.CLOUDFLARE_API_TOKEN;

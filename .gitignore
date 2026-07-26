@@ -41,3 +41,10 @@ _mockups/
 
 # PWA build output and installed deps (built on demand with npm + vite)
 tools/roundtable/packages/web/dist/
+
+# Credentials. The node falls back to ./node.token in its working directory when
+# ROUNDTABLE_NODE_TOKEN_FILE is unset, so running it from a checkout drops a real
+# credential here. Never let one be committed.
+*.token
+node.token
+admin-token

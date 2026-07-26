@@ -661,8 +661,16 @@ not for the node path.
 mutate, idempotent. It creates the `/node/connect` bypass first, probes that the path is no longer
 redirected to Access, and only then creates the host-wide app — aborting if the probe fails. The
 allow policy is cloned from whatever guards `spoares.com` rather than reinvented. Scoped to
-`roundtable.spoares.com` and `api.spoares.com`; `n8n`/`listmonk` keep their own credentials and
-`ingest` (Apple Health) is left alone, per Adrian 2026-07-26.
+`roundtable.spoares.com` ONLY; `n8n`/`listmonk` keep their own credentials and `ingest` (Apple
+Health) is left alone, per Adrian 2026-07-26.
+
+**`api.spoares.com` was on the gating list and was REMOVED — do not add it back.** Its bare `/` is
+404, which makes it look idle. It is not: it is the Right Suite updater + licensing API that every
+shipped desktop app calls home to (`rightapps-register.mjs` `DEFAULT_API_BASE`,
+`RIGHT-SUITE-RELEASE-PIPELINE.md`, and ScrapeRight directly per `LICENSING-RUNBOOK.md`). Verified
+live 2026-07-26: `/v1/health` 200, `viewright` `latest.json` 200, `scraperight` 204 (no build for
+that platform yet — a valid answer). Access in front of it would 302 every installed app's updater
+into a login it cannot complete. Public by design, protected by license tokens, not by network.
 
 **Blocked on one token scope.** `CLOUDFLARE_API_TOKEN` on the Mac verifies `active` and reaches
 zones, DNS, rulesets and firewall rules, but every `access/*` endpoint returns **10000** (valid
