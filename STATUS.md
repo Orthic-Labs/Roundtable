@@ -657,6 +657,15 @@ rest (simpler — no node code or reinstall), or an Access **service token** wit
 node token is what authenticates it. Access would make the admin login redundant for a *browser*,
 not for the node path.
 
+**And it must not be deleted BEFOREhand — the ordering is the whole point (asked 2026-07-26).**
+Removing the admin login is only safe once Access is verified live in front of the host. Today it
+is not: `roundtable.spoares.com` returns no Access redirect, and `/api/me` and `/api/rooms` both
+return 401 purely because of that login. It is currently the ONLY thing between the open internet
+and every room transcript, and the only thing stopping an anonymous visitor posting into a room.
+"The extra layer is unnecessary" is correct *after* something else authenticates, not before.
+Sequence: add the token scope → run `ops/gate-with-access.mjs --apply` → confirm Access is live AND
+both nodes survived → only then reconsider the browser-side login. Never reorder those.
+
 **The fix is written and committed: `ops/gate-with-access.mjs`.** Dry-run by default, `--apply` to
 mutate, idempotent. It creates the `/node/connect` bypass first, probes that the path is no longer
 redirected to Access, and only then creates the host-wide app — aborting if the probe fails. The
