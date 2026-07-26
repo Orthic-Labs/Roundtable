@@ -613,8 +613,48 @@ Still absent:
   rather than treating them as a fault.
 - The hub itself remains dependency-free regardless; only the PWA build needs npm.
 
+## Network exposure — `roundtable.spoares.com` is NOT behind Cloudflare Access (measured 2026-07-26)
+
+The hub's own admin login is the only thing between the public internet and the rooms. That login
+is holding (`/api/me` → 401 unauthenticated, a wrong token → 401), but it is the sole layer.
+
+Cloudflare Access applications match by **hostname**, so the policy on the apex does not extend to
+a subdomain. Measured across the zone, unauthenticated, from outside:
+
+| Host | State |
+|---|---|
+| `spoares.com` | gated by CF Access |
+| `admin.spoares.com` | gated by CF Access |
+| `roundtable.spoares.com` | **not gated** — 200, serves the PWA |
+| `n8n.spoares.com` | **not gated** — 200 (own login live: `/rest/login` → 401) |
+| `listmonk.spoares.com` | **not gated** — 200 (own login live: `/admin` → 307) |
+| `api.spoares.com` | not gated — 404 |
+| `ingest.spoares.com` | not gated — 404 |
+
+A proxied `*.spoares.com` wildcard exists, so new subdomains are reachable by default rather than
+by decision. nginx adds nothing here: the `roundtable.spoares.com` vhost is a plain `proxy_pass`
+with no `allow`/`deny` or `auth_basic`.
+
+**Before putting Access in front of this host, read this:** both nodes dial
+`wss://roundtable.spoares.com/node/connect`. Access intercepts the WebSocket handshake and a node
+has no browser identity to satisfy it, so a blunt whole-host policy silently kills every node.
+Two workable shapes: an Access **bypass policy scoped to `/node/connect`** with Access covering the
+rest (simpler — no node code or reinstall), or an Access **service token** with the nodes sending
+`CF-Access-Client-Id`/`CF-Access-Client-Secret`.
+
+**The admin login cannot be deleted afterwards.** `/node/connect` must stay outside Access, and the
+node token is what authenticates it. Access would make the admin login redundant for a *browser*,
+not for the node path.
+
+**Blocked on a token scope:** `CLOUDFLARE_API_TOKEN` on the Mac verifies `active` and can list
+zones, but every `access/*` endpoint returns error 10000 — valid token, missing permission. Add
+**Account → Access: Apps and Policies → Edit** plus **Access: Organizations, Identity Providers and
+Groups → Read** (CF dash → My Profile → API Tokens → edit). Editing permissions keeps the token
+value, so no session restart is needed; rolling it would need one.
+
 ## Next action
 
-1. **nginx** — Adrian's sudo, one command (see HANDOVER.md). Until then the node reaches the hub
-   over an SSH tunnel rather than `wss://roundtable.spoares.com`.
-2. Windows node installer (Adrian is handling the timing).
+1. Add the Access scope to `CLOUDFLARE_API_TOKEN`, then gate `roundtable.spoares.com` with a
+   `/node/connect` bypass and confirm both nodes stay connected across the change. `n8n` deserves
+   the same treatment first — it is workflow automation holding credentials for other services.
+2. Verify the PWA past the login screen (needs Adrian's admin token; see above).
