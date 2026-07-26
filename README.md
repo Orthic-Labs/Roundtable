@@ -1,6 +1,14 @@
 # Roundtable
 
-Cross-device rooms for existing local agent sessions. Round-trip a message from one device to another with a vendor session attached on the receiving side, and stream the result back without sharing keys, prompts, or context.
+> **TL;DR:** Roundtable lets you continue an existing local AI coding session from another device without copying API keys or full prompt history to a cloud service.
+
+Roundtable creates cross-device rooms around agent sessions already running on your machines. Send a
+message from phone, laptop or browser; a node on the machine holding the real Codex or Claude session
+forwards it locally, then streams response back into room.
+
+Technically, a Rust hub handles authenticated rooms, delivery & WebSocket transport; local nodes
+adapt vendor session protocols; a PWA provides remote interface; an MCP channel lets Claude attach.
+Hub routes messages, not provider credentials or hidden model context.
 
 ## Start here
 
