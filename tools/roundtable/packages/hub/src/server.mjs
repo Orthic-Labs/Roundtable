@@ -5,6 +5,7 @@
 // clear 501 rather than a 404 that looks like a typo.
 
 import { createServer } from 'node:http';
+import { createAccessVerifier } from './access-jwt.mjs';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -170,13 +171,30 @@ async function readBody(req) {
  */
 export function createHub({
   store, adminToken, secure = true, allowedOrigins = [], webRoot = DEFAULT_WEB_ROOT,
+  accessTeamDomain = process.env.ROUNDTABLE_ACCESS_TEAM_DOMAIN,
+  accessAudience = process.env.ROUNDTABLE_ACCESS_AUD,
 }) {
   if (!adminToken) throw new Error('adminToken is required');
   const adminDigest = hashSecretBytes(adminToken);
+  // When Cloudflare Access fronts this host it has already authenticated the operator, so asking
+  // for the admin token as well is a second login for no extra security. Verifying its signed
+  // assertion lets that prompt disappear. Unset -> feature off and the admin token is the only way
+  // in, which is what any deployment NOT behind Access needs.
+  const verifyAccess = createAccessVerifier({
+    teamDomain: accessTeamDomain,
+    audience: accessAudience,
+  });
   const sessions = new Map(); // token -> expiresAtMs
   const nodeConnections = new Set();
 
-  const authed = (req) => {
+  const authed = async (req) => {
+    // Access first: if Cloudflare already vouched for this request there is nothing to log into.
+    // The header alone proves nothing (anything reaching the origin could set it) — the signature,
+    // audience and expiry are all checked, and nginx separately refuses non-Cloudflare peers.
+    if (verifyAccess) {
+      const assertion = req.headers['cf-access-jwt-assertion'];
+      if (assertion && await verifyAccess(assertion)) return true;
+    }
     const token = sessionFromHeaders(req.headers);
     if (!token) return false;
     const expires = sessions.get(token);
@@ -248,7 +266,7 @@ export function createHub({
         return;
       }
 
-      if (!authed(req)) { send(res, 401, { error: 'unauthenticated' }); return; }
+      if (!(await authed(req))) { send(res, 401, { error: 'unauthenticated' }); return; }
 
       if (route.pattern === '/api/me') { send(res, 200, { authenticated: true }); return; }
 
