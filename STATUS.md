@@ -631,9 +631,20 @@ a subdomain. Measured across the zone, unauthenticated, from outside:
 | `api.spoares.com` | not gated — 404 |
 | `ingest.spoares.com` | not gated — 404 |
 
-A proxied `*.spoares.com` wildcard exists, so new subdomains are reachable by default rather than
-by decision. nginx adds nothing here: the `roundtable.spoares.com` vhost is a plain `proxy_pass`
-with no `allow`/`deny` or `auth_basic`.
+Widened to the whole account afterwards: **14 zones, 38 proxied hostnames, exactly 2 gated** — the
+two above. The other 36 are open, and most should be (the brand sites and `store.*` storefronts are
+meant to be public). The only other internal-looking ones open are `n8n` and `listmonk`, both of
+which have their own live logins (`/rest/login` → 401, `/admin` → 307).
+
+**Root cause: `roundtable.spoares.com` has no DNS record at all.** It resolves purely through the
+proxied `*.spoares.com` wildcard. Access applications are configured against hostnames someone
+deliberately created, so a wildcard-served host was never in any list to gate — it was invisible
+rather than overlooked. Every future subdomain served off that box inherits the same invisibility.
+nginx adds nothing either: the vhost is a plain `proxy_pass` with no `allow`/`deny` or `auth_basic`.
+
+Unrelated but found in the same sweep: `terradireta.com` returns `000` (connection refused) and
+`www.terradireta.com` returns `525` (TLS handshake failing between Cloudflare and the origin). That
+site is broken, independent of Access.
 
 **Before putting Access in front of this host, read this:** both nodes dial
 `wss://roundtable.spoares.com/node/connect`. Access intercepts the WebSocket handshake and a node
@@ -646,11 +657,25 @@ rest (simpler — no node code or reinstall), or an Access **service token** wit
 node token is what authenticates it. Access would make the admin login redundant for a *browser*,
 not for the node path.
 
-**Blocked on a token scope:** `CLOUDFLARE_API_TOKEN` on the Mac verifies `active` and can list
-zones, but every `access/*` endpoint returns error 10000 — valid token, missing permission. Add
+**The fix is written and committed: `ops/gate-with-access.mjs`.** Dry-run by default, `--apply` to
+mutate, idempotent. It creates the `/node/connect` bypass first, probes that the path is no longer
+redirected to Access, and only then creates the host-wide app — aborting if the probe fails. The
+allow policy is cloned from whatever guards `spoares.com` rather than reinvented. Scoped to
+`roundtable.spoares.com` and `api.spoares.com`; `n8n`/`listmonk` keep their own credentials and
+`ingest` (Apple Health) is left alone, per Adrian 2026-07-26.
+
+**Blocked on one token scope.** `CLOUDFLARE_API_TOKEN` on the Mac verifies `active` and reaches
+zones, DNS, rulesets and firewall rules, but every `access/*` endpoint returns **10000** (valid
+token, missing permission) at **both** account and zone level, and it cannot mint itself a better
+one (**9109** on `/user/tokens`). There is no other Cloudflare credential on the machine. Add
 **Account → Access: Apps and Policies → Edit** plus **Access: Organizations, Identity Providers and
-Groups → Read** (CF dash → My Profile → API Tokens → edit). Editing permissions keeps the token
-value, so no session restart is needed; rolling it would need one.
+Groups → Read** (CF dash → My Profile → API Tokens → edit), then run the script. Editing
+permissions keeps the token value, so no session restart; rolling it would need one.
+
+**Do not substitute WAF for this.** The token *can* write WAF rules, but WAF has no identity layer:
+any rule strong enough to gate the host either locks Adrian out (dynamic IP) or blocks
+`/node/connect` and kills both nodes. That is worse than the current state, where the app login
+holds at 401.
 
 ## Next action
 
