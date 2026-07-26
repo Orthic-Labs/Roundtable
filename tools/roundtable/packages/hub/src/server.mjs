@@ -70,7 +70,7 @@ const ROUTES = [
   ['GET', '/healthz'], ['GET', '/readyz'],
   ['POST', '/api/auth/login'], ['POST', '/api/auth/logout'], ['GET', '/api/me'],
   ['GET', '/api/rooms'], ['POST', '/api/rooms'],
-  ['GET', '/api/rooms/:room_id'],
+  ['GET', '/api/rooms/:room_id'], ['PATCH', '/api/rooms/:room_id'],
   ['GET', '/api/rooms/:room_id/messages'], ['POST', '/api/rooms/:room_id/messages'],
   ['GET', '/api/rooms/:room_id/seats'], ['POST', '/api/rooms/:room_id/seats'],
   ['DELETE', '/api/rooms/:room_id/seats/:seat_id'],
@@ -282,6 +282,18 @@ export function createHub({
         case '/api/rooms/:room_id': {
           const room = store.getRoom(roomId);
           if (!room) { send(res, 404, { error: 'unknown_room' }); return; }
+          // Archive. `store.archiveRoom` existed and the PWA's X button has always called PATCH
+          // here, but the route was never registered — so every archive attempt 404'd and rooms
+          // could be created and never removed. Found with a stray blank-slug room stuck in the
+          // sidebar and three 404s behind it in the request log.
+          if (req.method === 'PATCH') {
+            const body = await readBody(req);
+            if (body?.archived !== true) { send(res, 400, { error: 'unsupported_patch' }); return; }
+            // archiveRoom returns a boolean, not the row — re-read so the client gets a Room.
+            store.archiveRoom(roomId);
+            send(res, 200, { room: store.getRoom(roomId) });
+            return;
+          }
           send(res, 200, { room, seats: store.listSeats(roomId) });
           return;
         }

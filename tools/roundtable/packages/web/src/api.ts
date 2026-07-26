@@ -16,8 +16,8 @@ export const api = {
   // login screen was the first thing rendered; the moment Access authenticated the operator
   // straight into the shell, the app went white.
   rooms: async () => (await request<{ rooms: Room[] }>('/api/rooms')).rooms,
-  createRoom: (input: Pick<Room, 'slug' | 'title' | 'objective'>) => request<Room>('/api/rooms', { method: 'POST', body: JSON.stringify({ ...input, request_id: crypto.randomUUID() }) }),
-  archiveRoom: (id: string) => request<Room>(`/api/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ archived: true, request_id: crypto.randomUUID() }) }),
+  createRoom: async (input: Pick<Room, 'slug' | 'title' | 'objective'>) => (await request<{ room: Room }>('/api/rooms', { method: 'POST', body: JSON.stringify({ ...input, request_id: crypto.randomUUID() }) })).room,
+  archiveRoom: async (id: string) => (await request<{ room: Room }>(`/api/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ archived: true, request_id: crypto.randomUUID() }) })).room,
   messages: async (id: string, beforeSeq?: number) => (await request<{ messages: Message[] }>(`/api/rooms/${id}/messages?limit=30${beforeSeq ? `&before_seq=${beforeSeq}` : ''}`)).messages,
   postMessage: (roomId: string, body: string, mentioned_seat_ids: string[], request_id: string) => request<Message>(`/api/rooms/${roomId}/messages`, { method: 'POST', body: JSON.stringify({ body, mentioned_seat_ids, request_id }) }),
   seats: async (roomId: string) => (await request<{ seats: Seat[] }>(`/api/rooms/${roomId}/seats`)).seats,

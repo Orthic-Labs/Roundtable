@@ -22,6 +22,36 @@ async function withApi(fn) {
   try { await fn(api, store); } finally { await hub.close(); }
 }
 
+test('API: PATCH /api/rooms/:id archives — the route the X button calls', async () => {
+  // This route was never registered: `store.archiveRoom` existed and the PWA had always sent
+  // PATCH here, so every archive attempt 404'd and rooms could be created but never removed.
+  // Found from a stray blank-slug room stuck in the sidebar with three 404s behind it.
+  await withApi(async (api, store) => {
+    const room = store.createRoom({ slug: 'doomed', title: 'Doomed' });
+
+    const res = await api(`/api/rooms/${room.id}`, {
+      method: 'PATCH', body: JSON.stringify({ archived: true }),
+    });
+    assert.equal(res.status, 200, 'archive must not 404');
+
+    const body = await res.json();
+    // archiveRoom() returns a boolean; the client types this as a Room, so the handler must
+    // re-read the row rather than pass that through.
+    assert.equal(typeof body.room, 'object');
+    assert.ok(body.room.archived_at_ms, 'the room must actually be archived');
+    assert.equal(store.listRooms().find((r) => r.id === room.id), undefined, 'drops out of the listing');
+  });
+});
+
+test('API: PATCH with anything other than archived:true is refused', async () => {
+  await withApi(async (api, store) => {
+    const room = store.createRoom({ slug: 'keep', title: 'Keep' });
+    const res = await api(`/api/rooms/${room.id}`, { method: 'PATCH', body: JSON.stringify({ title: 'renamed' }) });
+    assert.equal(res.status, 400, 'an unsupported patch must not silently no-op as success');
+    assert.ok(store.listRooms().find((r) => r.id === room.id), 'and must not archive it');
+  });
+});
+
 test('API: create a room, then read it back in the list', async () => {
   await withApi(async (api) => {
     const created = await api('/api/rooms', {
