@@ -37,6 +37,8 @@ export const NodeFrame = Object.freeze({
   HELLO: 'node.hello',
   PONG: 'node.pong',
   DELIVERY_ACK: 'node.delivery.ack',
+  DELIVERY_STATE: 'node.delivery.state',
+  RUN_EVENT: 'node.run.event',
   MESSAGE_POST: 'node.message.post',
   HANDOFF_CREATE: 'node.handoff.create',
   APPROVAL_REQUEST: 'node.approval.request',
@@ -61,7 +63,7 @@ export class WireError extends Error {}
  * Build an envelope for a hub->node frame.
  * `event_id` and `sent_at_ms` are injectable so tests are deterministic.
  */
-export function encodeFrame(type, payload, { eventId, sentAtMs } = {}) {
+export function encodeFrame(type, payload, { eventId, sentAtMs, cursor } = {}) {
   if (!HUB_FRAMES.has(type)) throw new WireError(`unknown hub frame: ${type}`);
   if (payload === undefined || payload === null || typeof payload !== 'object') {
     throw new WireError(`payload must be an object for ${type}`);
@@ -72,6 +74,7 @@ export function encodeFrame(type, payload, { eventId, sentAtMs } = {}) {
     sent_at_ms: sentAtMs ?? Date.now(),
     type,
     payload,
+    ...(Number.isInteger(cursor) ? { cursor } : {}),
   };
 }
 

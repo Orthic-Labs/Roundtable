@@ -37,7 +37,7 @@ test('every hub->node frame the Rust node parses is encodable', () => {
 
 test('every node->hub frame the Rust node emits is decodable', () => {
   // From encode_frame(...) call sites in hub.rs.
-  for (const t of ['node.hello', 'node.pong', 'node.delivery.ack', 'node.message.post',
+  for (const t of ['node.hello', 'node.pong', 'node.delivery.ack', 'node.delivery.state', 'node.run.event', 'node.message.post',
                    'node.handoff.create', 'node.approval.request', 'node.seat.presence']) {
     const raw = JSON.stringify({ version: PROTOCOL_VERSION, event_id: FIXED.eventId, sent_at_ms: FIXED.sentAtMs, type: t, payload: {} });
     assert.equal(decodeFrame(raw).type, t);

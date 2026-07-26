@@ -52,6 +52,9 @@ const STORE_ERROR_STATUS = {
   unknown_seat: 404,
   unknown_seat_or_delivery: 404,
   unknown_approval: 404,
+  unknown_run: 404,
+  executor_not_in_room: 400,
+  requester_not_in_room: 400,
   body_required: 400,
   handoff_to_self: 400,
   seat_not_in_room: 400,
@@ -72,6 +75,8 @@ const ROUTES = [
   ['GET', '/api/rooms'], ['POST', '/api/rooms'],
   ['GET', '/api/rooms/:room_id'], ['PATCH', '/api/rooms/:room_id'],
   ['GET', '/api/rooms/:room_id/messages'], ['POST', '/api/rooms/:room_id/messages'],
+  ['GET', '/api/rooms/:room_id/tasks'], ['POST', '/api/rooms/:room_id/tasks'],
+  ['GET', '/api/rooms/:room_id/runs'], ['GET', '/api/runs/:run_id/events'],
   ['GET', '/api/rooms/:room_id/seats'], ['POST', '/api/rooms/:room_id/seats'],
   ['DELETE', '/api/rooms/:room_id/seats/:seat_id'],
   ['POST', '/api/rooms/:room_id/handoffs'],
@@ -309,6 +314,27 @@ export function createHub({
           send(res, 201, result);
           return;
         }
+        case '/api/rooms/:room_id/tasks': {
+          if (req.method === 'GET') {
+            send(res, 200, { tasks: store.listTasks(roomId), runs: store.listRuns(roomId) });
+            return;
+          }
+          const body = await readBody(req);
+          const created = store.createTask({ ...body, roomId });
+          api.flushDeliveries();
+          send(res, 201, created);
+          return;
+        }
+        case '/api/rooms/:room_id/runs': {
+          send(res, 200, { runs: store.listRuns(roomId) });
+          return;
+        }
+        case '/api/runs/:run_id/events': {
+          const run = store.getRun(route.params.run_id);
+          if (!run) { send(res, 404, { error: 'unknown_run' }); return; }
+          send(res, 200, { events: store.listRunEvents(run.id) });
+          return;
+        }
         case '/api/rooms/:room_id/seats': {
           if (req.method === 'GET') { send(res, 200, { seats: store.listSeats(roomId) }); return; }
           const body = await readBody(req);
@@ -421,7 +447,7 @@ export function createHub({
       keepalive.unref?.();
       conn.on('close', () => { clearInterval(keepalive); nodeConnections.delete(conn); });
       for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId: null })) {
-        conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload)));
+        conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload, { cursor: evt.cursor })));
         conn.meta.cursor = evt.cursor;
       }
       return;
@@ -521,7 +547,7 @@ export function createHub({
               continue;
             }
           }
-          conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload)));
+          conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload, { cursor: evt.cursor })));
           conn.meta.cursor = evt.cursor;
         }
         return;
@@ -533,9 +559,25 @@ export function createHub({
         store.ackDelivery(frame.payload?.delivery_ack?.delivery_id);
         return;
       }
+      if (frame.type === NodeFrame.DELIVERY_STATE) {
+        handleNodeDeliveryState(conn, frame.payload?.delivery_state);
+        return;
+      }
+      if (frame.type === NodeFrame.RUN_EVENT) {
+        handleNodeRunEvent(conn, frame.payload?.run_event);
+        return;
+      }
       if (frame.type === NodeFrame.MESSAGE_POST) {
         // HubCommand::MessagePost { ... } likewise -> {"message_post": {...}}.
-        handleNodeMessagePost(frame.payload?.message_post);
+        handleNodeMessagePost(conn, frame.payload?.message_post);
+        return;
+      }
+      if (frame.type === NodeFrame.APPROVAL_REQUEST) {
+        handleNodeApprovalRequest(conn, frame.payload?.approval_request);
+        return;
+      }
+      if (frame.type === NodeFrame.SEAT_PRESENCE) {
+        handleNodeSeatPresence(conn, frame.payload?.seat_presence);
         return;
       }
       if (frame.type === NodeFrame.HANDOFF_CREATE) {
@@ -665,7 +707,7 @@ export function createHub({
    * (seat_id, request_id) dedupe for safety across a reconnect-and-retry. There is deliberately no
    * response frame sent back for this message type; match that contract rather than inventing one.
    */
-  function handleNodeMessagePost(payload) {
+  function handleNodeMessagePost(conn, payload) {
     const {
       request_id: requestId, seat_id: seatId, room_id: roomId,
       message_kind: kind, body, reply_to: replyTo, request_payload_sha256: sha,
@@ -675,7 +717,7 @@ export function createHub({
       return;
     }
     const seat = store.getSeat(seatId);
-    if (!seat || seat.room_id !== roomId) {
+    if (!seat || seat.room_id !== roomId || seat.node_id !== conn.meta?.nodeId) {
       log.warn('node.message.post.unknown_seat', { seat_id: seatId, room_id: roomId });
       return;
     }
@@ -685,6 +727,66 @@ export function createHub({
       }));
     } catch (e) {
       log.error('node.message.post.failed', { seat_id: seatId, room_id: roomId, err: e });
+    }
+  }
+
+  function handleNodeDeliveryState(conn, payload) {
+    const { delivery_id: deliveryId, state, error_code: errorCode = null } = payload ?? {};
+    const states = new Set(['queued', 'sent', 'acked', 'running', 'waiting_approval', 'completed', 'failed', 'dead_letter']);
+    if (!deliveryId || !states.has(state)) {
+      log.warn('node.delivery.state.malformed');
+      return;
+    }
+    const delivery = store.setDeliveryStateForNode({ nodeId: conn.meta?.nodeId, deliveryId, state, errorCode });
+    if (!delivery) log.warn('node.delivery.state.forbidden', { delivery_id: deliveryId });
+  }
+
+  function handleNodeRunEvent(conn, payload) {
+    const { delivery_id: deliveryId, event_key: eventKey, event_type: type, payload: eventPayload = {} } = payload ?? {};
+    const delivery = store.getDelivery(deliveryId);
+    if (!delivery || delivery.node_id !== conn.meta?.nodeId) {
+      log.warn('node.run.event.forbidden', { delivery_id: deliveryId });
+      return;
+    }
+    const run = store.getRunByDelivery(deliveryId);
+    if (!run || !eventKey || !type) return;
+    try {
+      store.appendRunEvent({ runId: run.id, eventKey, type, payload: eventPayload });
+    } catch (err) {
+      log.error('node.run.event.failed', { err: String(err), run_id: run.id });
+    }
+  }
+
+  function handleNodeApprovalRequest(conn, payload) {
+    const {
+      seat_id: seatId, delivery_id: deliveryId, provider_request_id: providerRequestId,
+      description, input_preview: inputPreview = '', decisions,
+    } = payload ?? {};
+    const seat = store.getSeat(seatId);
+    const delivery = store.getDelivery(deliveryId);
+    if (!seat || !delivery || seat.node_id !== conn.meta?.nodeId || delivery.seat_id !== seatId || delivery.node_id !== conn.meta?.nodeId) {
+      log.warn('node.approval.request.forbidden', { seat_id: seatId, delivery_id: deliveryId });
+      return;
+    }
+    try {
+      store.createApproval({
+        roomId: seat.room_id, seatId, deliveryId, providerRequestId,
+        description, inputPreview, decisions,
+      });
+    } catch (err) {
+      if (err.message !== 'approval_exists') log.error('node.approval.request.failed', { err: String(err) });
+    }
+  }
+
+  function handleNodeSeatPresence(conn, payload) {
+    const { seat_id: seatId, state, last_ack_seq: lastAckSeq } = payload ?? {};
+    const states = new Set(['detached', 'offline', 'idle', 'running', 'waiting_approval', 'error']);
+    if (!seatId || !states.has(state) || !Number.isInteger(lastAckSeq)) {
+      log.warn('node.seat.presence.malformed');
+      return;
+    }
+    if (!store.updateSeatPresence({ nodeId: conn.meta?.nodeId, seatId, state, lastAckSeq })) {
+      log.warn('node.seat.presence.forbidden', { seat_id: seatId });
     }
   }
 
@@ -701,10 +803,10 @@ export function createHub({
     // (`s.mark_event_acked(Uuid::now_v7(), accepted.resume_cursor)`) reuses the handshake's
     // resume_cursor, not anything from this payload. `conn.meta.cursor` below is purely the
     // HUB's own bookkeeping for what to replay on a future reconnect.
-    const envelope = encodeFrame(frameType, payload);
     const evt = store.appendEvent({
       targetNodeId: delivery?.node_id ?? null, type: frameType, payload,
     });
+    const envelope = encodeFrame(frameType, payload, { cursor: evt.cursor });
     for (const conn of nodeConnections) {
       if (!conn.meta?.isNode) continue;
       if (delivery?.node_id && conn.meta.nodeId && conn.meta.nodeId !== delivery.node_id) continue;
@@ -746,7 +848,7 @@ export function createHub({
         // driven end-to-end.
         const payload = {
           delivery_assign: {
-            delivery: d,
+            delivery: { ...d, run_id: store.getRunByDelivery(d.id)?.id ?? null },
             message: withMentions(message),
             parent: parent ? withMentions(parent) : null,
             context_messages: contextMessages.map(withMentions),

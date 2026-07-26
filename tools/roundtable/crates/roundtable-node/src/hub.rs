@@ -45,6 +45,8 @@ struct Envelope<T> {
     version: u16,
     event_id: Uuid,
     sent_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor: Option<i64>,
     #[serde(rename = "type")]
     kind: String,
     payload: T,
@@ -225,6 +227,12 @@ pub enum HubCommand {
         state: DeliveryState,
         error_code: Option<String>,
     },
+    RunEvent {
+        delivery_id: Uuid,
+        event_key: String,
+        event_type: String,
+        payload: Value,
+    },
     MessagePost {
         request_id: Uuid,
         seat_id: Uuid,
@@ -313,6 +321,17 @@ pub enum ClientCommand {
         body: String,
         reply_to: Option<Uuid>,
         response: oneshot::Sender<NodeResult<Uuid>>,
+    },
+    DeliveryState {
+        delivery_id: Uuid,
+        state: DeliveryState,
+        error_code: Option<String>,
+    },
+    RunEvent {
+        delivery_id: Uuid,
+        event_key: String,
+        event_type: String,
+        payload: Value,
     },
     Handoff {
         from_seat_id: Uuid,
@@ -504,7 +523,7 @@ impl HubDriver {
 
     async fn serve(&mut self, transport: Box<dyn HubTransport>, accepted: HelloAccepted) -> NodeResult<()> {
         let transport_arc: Arc<dyn HubTransport> = Arc::from(transport);
-        let (mut reader_tx, mut reader_rx) = mpsc::unbounded_channel::<HubEvent>();
+        let (reader_tx, mut reader_rx) = mpsc::unbounded_channel::<(HubEvent, Option<i64>)>();
         let transport_for_reader = transport_arc.clone();
         tokio::spawn(async move {
             loop {
@@ -548,7 +567,7 @@ impl HubDriver {
                     }
                 };
                 if let Some(evt) = evt {
-                    if reader_tx.send(evt).is_err() { break; }
+                    if reader_tx.send((evt, env.cursor)).is_err() { break; }
                 }
             }
         });
@@ -569,7 +588,7 @@ impl HubDriver {
             tokio::select! {
                 evt = reader_rx.recv() => {
                     match evt {
-                        Some(e) => {
+                        Some((e, event_cursor)) => {
                             // A query answer belongs to one waiting caller, not to the event
                             // stream. Routed and consumed here.
                             if let HubEvent::QueryResult { request_id, ok, result, error } = &e {
@@ -597,7 +616,8 @@ impl HubDriver {
                                     attempt: delivery.attempt,
                                     last_event_id: None,
                                 });
-                                s.mark_event_acked(Uuid::now_v7(), accepted.resume_cursor);
+                                s.mark_event_acked(Uuid::now_v7(), event_cursor.unwrap_or(accepted.resume_cursor));
+                                s.save(&self.cfg.state_path)?;
                             }
                             let _ = self.event_tx.send(e.clone());
                             if let HubEvent::DeliveryAssign { delivery, .. } = e {
@@ -609,6 +629,7 @@ impl HubDriver {
                                 if let Some(rec) = s.deliveries.get_mut(&delivery.id) {
                                     rec.state = "acked".into();
                                 }
+                                s.save(&self.cfg.state_path)?;
                             }
                         }
                         None => return Ok(()),
@@ -691,6 +712,18 @@ impl HubDriver {
                 }
                 let _ = response.send(Ok(req_id));
             }
+            Some(ClientCommand::DeliveryState { delivery_id, state, error_code }) => {
+                let frame = HubCommand::DeliveryState { delivery_id, state, error_code };
+                if let Ok(b) = encode_frame("node.delivery.state", &frame) {
+                    let _ = transport_arc.send_frame(&b).await;
+                }
+            }
+            Some(ClientCommand::RunEvent { delivery_id, event_key, event_type, payload }) => {
+                let frame = HubCommand::RunEvent { delivery_id, event_key, event_type, payload };
+                if let Ok(b) = encode_frame("node.run.event", &frame) {
+                    let _ = transport_arc.send_frame(&b).await;
+                }
+            }
             Some(ClientCommand::SeatPresence { seat_id, state, last_ack_seq }) => {
                 let frame = HubCommand::SeatPresence { seat_id, state, last_ack_seq };
                 if let Ok(b) = encode_frame("node.seat.presence", &frame) {
@@ -712,6 +745,7 @@ fn encode_frame<T: Serialize>(kind: &str, payload: &T) -> NodeResult<Vec<u8>> {
         version: PROTOCOL_VERSION,
         event_id: Uuid::now_v7(),
         sent_at_ms: now_ms(),
+        cursor: None,
         kind: kind.into(),
         payload,
     };

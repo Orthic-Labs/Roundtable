@@ -1,0 +1,10 @@
+import { useState } from 'react';
+import type { Run, RunEvent, Seat, Task } from '../types';
+import './RunPanel.css';
+
+export function RunPanel({ tasks, runs, events, seats, online, onCreate }:{tasks:Task[];runs:Run[];events:Record<string,RunEvent[]>;seats:Seat[];online:boolean;onCreate:(input:Pick<Task,'executor_seat_id'|'title'|'instructions'>)=>Promise<void>}) {
+ const [title,setTitle]=useState(''),[instructions,setInstructions]=useState(''),[executor,setExecutor]=useState(seats[0]?.id ?? '');
+ const submit=async(e:React.FormEvent)=>{e.preventDefault();if(!title.trim()||!instructions.trim()||!executor)return;await onCreate({executor_seat_id:executor,title:title.trim(),instructions:instructions.trim()});setTitle('');setInstructions('')};
+ const taskById=new Map(tasks.map(task=>[task.id,task]));
+ return <section className="panel runs"><h2>Task runs</h2>{runs.map(run=><article className="run" key={run.id}><b>{taskById.get(run.task_id)?.title ?? 'Task'}</b><span className={`state ${run.state}`}>{run.state}</span><small>{seats.find(s=>s.id===run.executor_seat_id)?.alias ?? run.executor_seat_id} · {run.observability_grade} observability</small>{events[run.id]?.slice(-3).map(event=><small key={event.id}>#{event.seq} {event.type}</small>)}{run.error_code&&<small className="error">{run.error_code}</small>}</article>)}{!runs.length&&<p className="muted">No task runs yet.</p>}<form className="task-form" onSubmit={submit}><label>Task title<input aria-label="Task title" value={title} onChange={e=>setTitle(e.target.value)} required /></label><label>Instructions<textarea aria-label="Task instructions" value={instructions} onChange={e=>setInstructions(e.target.value)} required /></label><label>Executor<select aria-label="Task executor" value={executor} onChange={e=>setExecutor(e.target.value)} required>{seats.map(seat=><option key={seat.id} value={seat.id}>@{seat.alias}</option>)}</select></label><button className="primary" disabled={!online||!seats.length}>Run task</button></form></section>
+}

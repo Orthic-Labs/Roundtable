@@ -40,6 +40,18 @@ describe('collection endpoints return arrays, not the hub envelope', () => {
     expect(seats[0].alias).toBe('mac-codex');
   });
 
+  it('keeps task and run activity separate from messages', async () => {
+    respond({ tasks: [{ id: 't1' }], runs: [{ id: 'run1', task_id: 't1' }] });
+    const work = await api.tasks('r1');
+    expect(work.tasks[0].id).toBe('t1');
+    expect(work.runs[0].task_id).toBe('t1');
+  });
+
+  it('reads ordered activity per run', async () => {
+    respond({ events: [{ id: 'e1', seq: 1, type: 'item.completed' }] });
+    expect((await api.runEvents('run1')).map((event) => event.seq)).toEqual([1]);
+  });
+
   it('sessions unwraps {nodes} and tolerates the key being absent', async () => {
     respond({ nodes: [{ node_id: 'n1' }], connected: 1 });
     expect(await api.sessions()).toHaveLength(1);

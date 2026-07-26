@@ -8,10 +8,11 @@ const sha = (s) => s; // dedupe treats the hash as opaque; real hashing is the c
 
 test('applies the Rust migration verbatim — same tables, no JS-specific schema', () => {
   const store = Store.open(':memory:');
-  // Exactly the tables crates/roundtable-store/migrations/0001_initial.sql declares.
+  // Exactly the tables declared by the shared v1 and v2 Rust migrations.
   assert.deepEqual(store.tables(), [
-    'approvals', 'browser_sessions', 'deliveries', 'events', 'handoffs',
-    'message_mentions', 'messages', 'nodes', 'request_dedupe', 'rooms', 'seats',
+    'approvals', 'artifacts', 'browser_sessions', 'deliveries', 'events', 'handoffs',
+    'message_mentions', 'messages', 'nodes', 'request_dedupe', 'rooms', 'run_events',
+    'runs', 'seats', 'tasks',
   ]);
   store.close();
 });
@@ -63,4 +64,25 @@ test('a missing migration file fails loudly rather than opening an empty databas
     () => Store.open(':memory:', { migrationPath: '/nonexistent/0001.sql' }),
     (e) => e instanceof StoreError && /cannot read migration/.test(e.message),
   );
+});
+
+test('a task creates one delivery-backed run with ordered idempotent events', () => {
+  const store = Store.open(':memory:');
+  const room = store.createRoom({ slug: 'tasks', title: 'Tasks' });
+  const node = store.registerNode({ name: 'node', tokenHash: 'h' });
+  const seat = store.createSeat({ roomId: room.id, nodeId: node.id, alias: 'codex', provider: 'codex', sessionRef: 't' });
+  const { task, run, delivery } = store.createTask({
+    roomId: room.id, executorSeatId: seat.id, title: 'Inspect migration', instructions: 'Report schema',
+    reasoningModel: 'gpt-5', executionRuntime: 'codex', toolExecutor: 'codex', observabilityGrade: 'standard',
+  });
+  assert.equal(task.state, 'queued');
+  assert.equal(run.task_id, task.id);
+  assert.equal(run.delivery_id, delivery.id);
+  const first = store.appendRunEvent({ runId: run.id, eventKey: 'e1', type: 'command.completed', payload: { exit_code: 0 } });
+  const retry = store.appendRunEvent({ runId: run.id, eventKey: 'e1', type: 'command.completed', payload: { exit_code: 0 } });
+  const second = store.appendRunEvent({ runId: run.id, eventKey: 'e2', type: 'result', payload: { summary: 'ok' } });
+  assert.deepEqual([first.seq, second.seq], [1, 2]);
+  assert.equal(retry.replayed, true);
+  assert.equal(store.listRunEvents(run.id).length, 2);
+  store.close();
 });

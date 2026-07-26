@@ -124,6 +124,8 @@ pub struct Delivery {
     pub attempt: i64,
     pub lease_until_ms: Option<i64>,
     pub error_code: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

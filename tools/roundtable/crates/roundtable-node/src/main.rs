@@ -9,8 +9,8 @@ use roundtable_node::{
     state::NodeState,
     NodeError, NodeResult,
 };
-use roundtable_protocol::{MessageKind, SeatProvider};
-use std::collections::HashMap;
+use roundtable_protocol::{DeliveryState, MessageKind, SeatProvider};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -159,6 +159,8 @@ struct SeatRouting {
     /// seat -> the delivery currently being worked. `ApprovalRequest` requires a delivery_id, and
     /// an approval only ever arises while a delivery is in flight.
     deliveries: Mutex<HashMap<Uuid, Uuid>>,
+    /// Deliveries backed by a Run keep lifecycle/tool activity in RunEvents, not chat.
+    run_deliveries: Mutex<HashSet<Uuid>>,
     /// hub approval_id -> what it takes to act on the decision. `event` is the Guardian
     /// assessment passed straight back to `thread/approveGuardianDeniedAction`.
     approvals: Mutex<HashMap<Uuid, PendingApproval>>,
@@ -198,6 +200,14 @@ async fn handle_hub_event(
             client.register_seat(delivery.seat_id).await;
             routing.rooms.lock().await.insert(delivery.seat_id, message.room_id);
             routing.deliveries.lock().await.insert(delivery.seat_id, delivery.id);
+            if delivery.run_id.is_some() {
+                routing.run_deliveries.lock().await.insert(delivery.id);
+            }
+            client.send(ClientCommand::DeliveryState {
+                delivery_id: delivery.id,
+                state: DeliveryState::Running,
+                error_code: None,
+            }).await;
 
             match seat.provider {
                 SeatProvider::Codex => {
@@ -321,7 +331,11 @@ async fn handle_ipc_request(
                     // The delivery is done the moment its reply lands; leaving it open would keep
                     // the lease alive and eventually retry work already completed.
                     routing.deliveries.lock().await.remove(&seat_id);
-                    let _ = delivery_id;
+                    client.send(ClientCommand::DeliveryState {
+                        delivery_id,
+                        state: DeliveryState::Completed,
+                        error_code: None,
+                    }).await;
                     IpcResponse::ok(id, serde_json::json!({ "message_id": message_id }))
                 }
                 Ok(Err(e)) => IpcResponse::err(id, format!("hub rejected the reply: {e}")),
@@ -470,6 +484,35 @@ async fn handle_codex_event(
         tracing::warn!(seat_id = %event.seat_id, "codex event for a seat with no known room; dropping");
         return;
     };
+    let delivery_id = routing.deliveries.lock().await.get(&event.seat_id).copied();
+    let has_run = match delivery_id {
+        Some(id) => routing.run_deliveries.lock().await.contains(&id),
+        None => false,
+    };
+    if let Some(delivery_id) = delivery_id {
+        client.send(ClientCommand::RunEvent {
+            delivery_id,
+            event_key: event.event_key.clone(),
+            event_type: event.item_type.clone().unwrap_or_else(|| event.kind.clone()),
+            payload: serde_json::json!({
+                "thread_id": event.thread_id.clone(),
+                "turn_id": event.turn_id.clone(),
+                "status": format!("{:?}", event.status),
+                "body": event.body.clone(),
+                "item_type": event.item_type.clone(),
+            }),
+        }).await;
+        let terminal = match event.status {
+            CodexTurnStatus::Completed => Some(DeliveryState::Completed),
+            CodexTurnStatus::Failed | CodexTurnStatus::Cancelled => Some(DeliveryState::Failed),
+            _ => None,
+        };
+        if let Some(state) = terminal {
+            client.send(ClientCommand::DeliveryState { delivery_id, state, error_code: None }).await;
+            routing.deliveries.lock().await.remove(&event.seat_id);
+            routing.run_deliveries.lock().await.remove(&delivery_id);
+        }
+    }
 
     if let Some(approval) = event.approval {
         if approval.status != "denied" {
@@ -514,6 +557,9 @@ async fn handle_codex_event(
         return;
     }
 
+    if has_run && (event.item_type.as_deref().is_some_and(|item| item != "agentMessage") || event.body.is_empty()) {
+        return;
+    }
     let (body, kind) = if !event.body.is_empty() {
         // The agent actually speaking is `Chat`; every other item is activity, so `Progress`.
         let kind = match event.item_type.as_deref() {

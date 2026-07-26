@@ -20,6 +20,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const MIGRATION_PATH = resolve(
   HERE, '../../../crates/roundtable-store/migrations/0001_initial.sql',
 );
+export const TASK_RUN_MIGRATION_PATH = resolve(
+  HERE, '../../../crates/roundtable-store/migrations/0002_task_runs.sql',
+);
 
 export class StoreError extends Error {}
 
@@ -47,7 +50,8 @@ export class Store {
     // up once on a fresh file and can never restart. Every test opens ':memory:', so nothing
     // caught it until a real restart on the box did.
     const version = Number(Object.values(db.prepare('PRAGMA user_version').get())[0] ?? 0);
-    if (version === 0) {
+    let currentVersion = version;
+    if (currentVersion === 0) {
       // A database created by the pre-guard code is fully migrated but still reports version 0.
       // Re-running the migration on it throws "table rooms already exists"; stamping it is
       // correct, because the schema it already has IS version 1. Without this, every database
@@ -56,7 +60,11 @@ export class Store {
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rooms'")
         .get();
       if (migrated) {
-        db.exec('PRAGMA user_version = 1');
+        const hasTaskRuns = db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'")
+          .get();
+        currentVersion = hasTaskRuns ? 2 : 1;
+        db.exec(`PRAGMA user_version = ${currentVersion}`);
       } else {
         let sql;
         try {
@@ -66,7 +74,18 @@ export class Store {
         }
         db.exec(sql);
         db.exec('PRAGMA user_version = 1');
+        currentVersion = 1;
       }
+    }
+    if (currentVersion < 2) {
+      let sql;
+      try {
+        sql = readFileSync(TASK_RUN_MIGRATION_PATH, 'utf8');
+      } catch (e) {
+        throw new StoreError(`cannot read migration at ${TASK_RUN_MIGRATION_PATH}: ${e.message}`);
+      }
+      db.exec(sql);
+      db.exec('PRAGMA user_version = 2');
     }
     return new Store(db);
   }
@@ -259,6 +278,14 @@ export class Store {
       .run(seatId).changes > 0;
   }
 
+  /** Update presence only when the authenticated node owns the named seat. */
+  updateSeatPresence({ nodeId, seatId, state, lastAckSeq }) {
+    const changed = this.#db
+      .prepare('UPDATE seats SET state = ?, last_ack_seq = ?, last_seen_ms = ? WHERE id = ? AND node_id = ?')
+      .run(state, lastAckSeq, Date.now(), seatId, nodeId).changes > 0;
+    return changed ? this.getSeat(seatId) : null;
+  }
+
   // ---- messages ----------------------------------------------------------
 
   /**
@@ -417,6 +444,82 @@ export class Store {
     return this.#db.prepare('SELECT * FROM handoffs WHERE room_id = ? ORDER BY created_at_ms ASC').all(roomId);
   }
 
+  // ---- tasks and runs ----------------------------------------------------
+
+  /** Create one delegated task and its first delivery-backed run atomically. */
+  createTask({
+    id = randomUUID(), runId = randomUUID(), roomId, requestedBySeatId = null, executorSeatId,
+    title, instructions, reasoningModel = null, executionRuntime = null, toolExecutor = null,
+    observabilityGrade = 'partial',
+  }) {
+    return this.tx(() => {
+      const executor = this.getSeat(executorSeatId);
+      if (!executor || executor.room_id !== roomId) throw new StoreError('executor_not_in_room');
+      if (requestedBySeatId) {
+        const requester = this.getSeat(requestedBySeatId);
+        if (!requester || requester.room_id !== roomId) throw new StoreError('requester_not_in_room');
+      }
+      const now = Date.now();
+      this.#db
+        .prepare('INSERT INTO tasks (id, room_id, requested_by_seat_id, executor_seat_id, title, instructions, state, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, roomId, requestedBySeatId, executorSeatId, title, instructions, 'queued', now, now);
+      const { deliveries } = this.#postMessageLocked({
+        roomId,
+        actorId: requestedBySeatId ?? 'system',
+        actorKind: requestedBySeatId ? 'agent' : 'system',
+        kind: 'system',
+        body: `Task queued: ${title}`,
+        mentionSeatIds: [executorSeatId],
+        deliveryReason: 'human_followup',
+      });
+      const delivery = deliveries[0];
+      this.#db
+        .prepare('INSERT INTO runs (id, task_id, room_id, executor_seat_id, delivery_id, state, reasoning_model, execution_runtime, tool_executor, observability_grade, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(runId, id, roomId, executorSeatId, delivery.id, 'queued', reasoningModel, executionRuntime, toolExecutor, observabilityGrade, now);
+      return { task: this.getTask(id), run: this.getRun(runId), delivery };
+    });
+  }
+
+  getTask(taskId) {
+    return this.#db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) ?? null;
+  }
+
+  listTasks(roomId) {
+    return this.#db.prepare('SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at_ms ASC').all(roomId);
+  }
+
+  getRun(runId) {
+    return this.#db.prepare('SELECT * FROM runs WHERE id = ?').get(runId) ?? null;
+  }
+
+  getRunByDelivery(deliveryId) {
+    return this.#db.prepare('SELECT * FROM runs WHERE delivery_id = ?').get(deliveryId) ?? null;
+  }
+
+  listRuns(roomId) {
+    return this.#db.prepare('SELECT * FROM runs WHERE room_id = ? ORDER BY created_at_ms ASC').all(roomId);
+  }
+
+  appendRunEvent({ id = randomUUID(), runId, eventKey, type, payload = {} }) {
+    return this.tx(() => {
+      const existing = this.#db.prepare('SELECT * FROM run_events WHERE run_id = ? AND event_key = ?').get(runId, eventKey);
+      if (existing) return { ...existing, payload: JSON.parse(existing.payload_json), replayed: true };
+      const run = this.getRun(runId);
+      if (!run) throw new StoreError('unknown_run');
+      const seq = this.#db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM run_events WHERE run_id = ?').get(runId).seq;
+      const now = Date.now();
+      this.#db
+        .prepare('INSERT INTO run_events (id, run_id, seq, event_key, type, payload_json, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, runId, seq, eventKey, type, JSON.stringify(payload), now);
+      return { id, run_id: runId, seq, event_key: eventKey, type, payload, created_at_ms: now, replayed: false };
+    });
+  }
+
+  listRunEvents(runId) {
+    return this.#db.prepare('SELECT * FROM run_events WHERE run_id = ? ORDER BY seq ASC').all(runId)
+      .map((event) => ({ ...event, payload: JSON.parse(event.payload_json) }));
+  }
+
   // ---- approvals ---------------------------------------------------------
 
   createApproval({
@@ -559,6 +662,23 @@ export class Store {
       .prepare('UPDATE deliveries SET state = ?, error_code = ?, updated_at_ms = ? WHERE id = ?')
       .run(state, errorCode, Date.now(), deliveryId);
     return this.getDelivery(deliveryId);
+  }
+
+  /** A node may transition only a delivery addressed to one of its own seats. */
+  setDeliveryStateForNode({ nodeId, deliveryId, state, errorCode = null }) {
+    const delivery = this.getDelivery(deliveryId);
+    if (!delivery || delivery.node_id !== nodeId) return null;
+    const updated = this.setDeliveryState(deliveryId, state, errorCode);
+    const run = this.getRunByDelivery(deliveryId);
+    if (run) {
+      const now = Date.now();
+      const terminal = ['completed', 'failed', 'dead_letter'].includes(state);
+      this.#db
+        .prepare('UPDATE runs SET state = ?, error_code = ?, started_at_ms = CASE WHEN ? = \'running\' AND started_at_ms IS NULL THEN ? ELSE started_at_ms END, finished_at_ms = CASE WHEN ? THEN ? ELSE finished_at_ms END WHERE id = ?')
+        .run(state, errorCode, state, now, terminal ? 1 : 0, now, run.id);
+      if (terminal) this.#db.prepare('UPDATE tasks SET state = ?, updated_at_ms = ? WHERE id = ?').run(state, now, run.task_id);
+    }
+    return updated;
   }
 
   pendingApprovals(roomId) {

@@ -100,6 +100,8 @@ pub struct CodexEvent {
     /// those carry only lifecycle status, not content.
     pub body: String,
     pub kind: String,
+    /// Stable provider item/review/turn identity used to deduplicate a RunEvent after retry.
+    pub event_key: String,
     pub provider_request_id: Option<String>,
     /// The `ThreadItem` variant this event came from, for `item/completed` only — e.g.
     /// `agentMessage`, `commandExecution`, `fileChange`. Lets a consumer distinguish the agent
@@ -494,9 +496,18 @@ impl CodexAdapter {
             }
             seat_id
         };
+        let event_key = match method {
+            "item/completed" => params.get("item").and_then(|item| item.get("id")).and_then(Value::as_str)
+                .map(str::to_string).unwrap_or_else(|| format!("{method}:{thread_id}:{turn_id:?}")),
+            "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" => params.get("reviewId")
+                .and_then(Value::as_str).map(|id| format!("{method}:{id}"))
+                .unwrap_or_else(|| format!("{method}:{thread_id}:{turn_id:?}")),
+            _ => format!("{method}:{thread_id}:{turn_id:?}"),
+        };
         Some(CodexEvent {
             seat_id, thread_id, turn_id, status, body,
             kind: method.to_string(),
+            event_key,
             provider_request_id: None,
             item_type,
             approval,

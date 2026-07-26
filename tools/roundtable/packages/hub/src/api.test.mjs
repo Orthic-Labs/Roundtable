@@ -102,6 +102,29 @@ test('API: attach a seat and see it on the room', async () => {
   });
 });
 
+test('API: task creates one delivery-backed run plus one compact system message', async () => {
+  await withApi(async (api, store) => {
+    const room = store.createRoom({ slug: 'tasks', title: 'Tasks' });
+    const node = store.registerNode({ name: 'mac', tokenHash: 'hash' });
+    const seat = store.createSeat({ roomId: room.id, nodeId: node.id, alias: 'mac-codex', provider: 'codex', sessionRef: 's1' });
+
+    const created = await api(`/api/rooms/${room.id}/tasks`, {
+      method: 'POST', body: JSON.stringify({ executorSeatId: seat.id, title: 'Check cursor', instructions: 'Persist before ack.' }),
+    });
+    assert.equal(created.status, 201);
+    const { task, run } = await created.json();
+    assert.equal(run.task_id, task.id);
+    assert.ok(run.delivery_id);
+
+    const listed = await (await api(`/api/rooms/${room.id}/tasks`)).json();
+    assert.equal(listed.tasks.length, 1);
+    assert.equal(listed.runs[0].id, run.id);
+    const { messages } = await (await api(`/api/rooms/${room.id}/messages`)).json();
+    assert.deepEqual(messages.map((message) => [message.kind, message.body]), [['system', 'Task queued: Check cursor']]);
+    assert.equal(store.listRunEvents(run.id).length, 0);
+  });
+});
+
 test('API: post a message with a mention, and page the transcript', async () => {
   await withApi(async (api, store) => {
     const { room } = await (await api('/api/rooms', {

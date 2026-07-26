@@ -1,4 +1,4 @@
-import type { Approval, DiscoveredSession, Message, QueuedWrite, Room, Seat, ServerEvent } from './types';
+import type { Approval, DiscoveredSession, Message, QueuedWrite, Room, Run, RunEvent, Seat, ServerEvent, Task } from './types';
 
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -19,6 +19,9 @@ export const api = {
   createRoom: async (input: Pick<Room, 'slug' | 'title' | 'objective'>) => (await request<{ room: Room }>('/api/rooms', { method: 'POST', body: JSON.stringify({ ...input, request_id: crypto.randomUUID() }) })).room,
   archiveRoom: async (id: string) => (await request<{ room: Room }>(`/api/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ archived: true, request_id: crypto.randomUUID() }) })).room,
   messages: async (id: string, beforeSeq?: number) => (await request<{ messages: Message[] }>(`/api/rooms/${id}/messages?limit=30${beforeSeq ? `&before_seq=${beforeSeq}` : ''}`)).messages,
+  tasks: (roomId: string) => request<{ tasks: Task[]; runs: Run[] }>(`/api/rooms/${roomId}/tasks`),
+  createTask: (roomId: string, input: Pick<Task, 'executor_seat_id' | 'title' | 'instructions'>) => request<{ task: Task; run: Run }>(`/api/rooms/${roomId}/tasks`, { method: 'POST', body: JSON.stringify({ executorSeatId: input.executor_seat_id, title: input.title, instructions: input.instructions, request_id: crypto.randomUUID() }) }),
+  runEvents: async (runId: string) => (await request<{ events: RunEvent[] }>(`/api/runs/${runId}/events`)).events,
   postMessage: (roomId: string, body: string, mentioned_seat_ids: string[], request_id: string) => request<Message>(`/api/rooms/${roomId}/messages`, { method: 'POST', body: JSON.stringify({ body, mentioned_seat_ids, request_id }) }),
   seats: async (roomId: string) => (await request<{ seats: Seat[] }>(`/api/rooms/${roomId}/seats`)).seats,
   sessions: async () => (await request<{ nodes: DiscoveredSession[] }>('/api/nodes?include_sessions=true')).nodes ?? [],

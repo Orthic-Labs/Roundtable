@@ -283,3 +283,50 @@ test('a node.message.post for an unknown seat_id is dropped, not thrown', async 
     client.close();
   });
 });
+
+test('a connected node cannot post as a seat owned by another node', async () => {
+  await withHub(async ({ store, room, seat, wsBase }) => {
+    const foreign = store.registerNode({ name: 'foreign', tokenHash: Store.hashNodeToken(NODE_TOKEN) });
+    const client = await connectAsNode(wsBase, foreign.id);
+    client.send(nodeFrame(NodeFrame.MESSAGE_POST, {
+      message_post: {
+        request_id: crypto.randomUUID(), seat_id: seat.id, room_id: room.id,
+        message_kind: 'chat', body: 'forged', reply_to: null, request_payload_sha256: 'forged',
+      },
+    }));
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(store.listMessages(room.id).length, 0);
+    client.close();
+  });
+});
+
+test('a node can report its own delivery state, approval, and presence', async () => {
+  await withHub(async ({ store, room, node, seat, wsBase }) => {
+    const client = await connectAsNode(wsBase, node.id);
+    const { run, delivery } = store.createTask({
+      roomId: room.id, executorSeatId: seat.id, title: 'x', instructions: 'x',
+    });
+    client.send(nodeFrame(NodeFrame.DELIVERY_STATE, {
+      delivery_state: { delivery_id: delivery.id, state: 'running', error_code: null },
+    }));
+    client.send(nodeFrame(NodeFrame.APPROVAL_REQUEST, {
+      approval_request: {
+        request_id: crypto.randomUUID(), seat_id: seat.id, delivery_id: delivery.id,
+        provider_request_id: 'guardian-1', description: 'patch', input_preview: 'x', decisions: ['approve', 'deny'],
+      },
+    }));
+    client.send(nodeFrame(NodeFrame.SEAT_PRESENCE, {
+      seat_presence: { seat_id: seat.id, state: 'running', last_ack_seq: 9 },
+    }));
+    client.send(nodeFrame(NodeFrame.RUN_EVENT, {
+      run_event: { delivery_id: delivery.id, event_key: 'provider-1', event_type: 'command.completed', payload: { exit_code: 0 } },
+    }));
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(store.getDelivery(delivery.id).state, 'running');
+    assert.equal(store.pendingApprovals(room.id).length, 1);
+    assert.equal(store.getSeat(seat.id).state, 'running');
+    assert.equal(store.getSeat(seat.id).last_ack_seq, 9);
+    assert.deepEqual(store.listRunEvents(run.id).map((event) => event.type), ['command.completed']);
+    client.close();
+  });
+});

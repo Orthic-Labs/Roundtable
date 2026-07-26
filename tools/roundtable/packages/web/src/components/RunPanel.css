@@ -1,0 +1,3 @@
+.runs .run{display:grid;gap:4px;padding:9px 0;border-bottom:1px solid var(--border)}
+.runs .run:last-of-type{margin-bottom:10px}.run small,.muted{color:var(--muted)}
+.task-form{display:grid;gap:8px;margin-top:12px}.task-form textarea,.task-form select{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:7px;background:var(--deep);color:var(--text)}.task-form textarea{min-height:70px}

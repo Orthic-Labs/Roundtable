@@ -13,7 +13,8 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-const MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const MIGRATION_V1: &str = include_str!("../migrations/0001_initial.sql");
+const MIGRATION_V2: &str = include_str!("../migrations/0002_task_runs.sql");
 const LEASE_MS: i64 = 10 * 60 * 1_000;
 
 #[derive(Debug, Error)]
@@ -668,8 +669,12 @@ fn open_connection(path: &Path) -> Result<Connection> {
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version == 0 {
-        connection.execute_batch(MIGRATION)?;
+        connection.execute_batch(MIGRATION_V1)?;
         connection.pragma_update(None, "user_version", 1)?;
+    }
+    if version < 2 {
+        connection.execute_batch(MIGRATION_V2)?;
+        connection.pragma_update(None, "user_version", 2)?;
     }
     Ok(connection)
 }
@@ -1489,6 +1494,7 @@ fn insert_delivery(
         attempt: 1,
         lease_until_ms: None,
         error_code: None,
+        run_id: None,
     };
     tx.execute(
         "INSERT INTO deliveries(id, room_id, message_id, seat_id, reason, state, attempt, created_at_ms, updated_at_ms)
@@ -1746,6 +1752,7 @@ fn delivery_row(row: &Row<'_>) -> rusqlite::Result<Delivery> {
         attempt: row.get(6)?,
         lease_until_ms: row.get(7)?,
         error_code: row.get(8)?,
+        run_id: None,
     })
 }
 
@@ -1822,6 +1829,7 @@ mod tests {
         let store = Store::memory().await.unwrap();
         let expected = vec![
             "approvals",
+            "artifacts",
             "browser_sessions",
             "deliveries",
             "events",
@@ -1831,7 +1839,10 @@ mod tests {
             "nodes",
             "request_dedupe",
             "rooms",
+            "run_events",
+            "runs",
             "seats",
+            "tasks",
         ];
         assert_eq!(store.inspect_schema().await.unwrap(), expected);
     }
