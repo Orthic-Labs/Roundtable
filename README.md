@@ -179,3 +179,7 @@ tools/roundtable/
 
 Detailed architecture: [`2026-07-22-roundtable-cross-device-architecture.md`](2026-07-22-roundtable-cross-device-architecture.md).
 Code-grounded overview: [`docs/product.md`](docs/product.md) & [`docs/architecture.md`](docs/architecture.md).
+
+## License
+
+Source-available proprietary software for internal use & evaluation; redistribution, repackaging & competing use are prohibited. See [LICENSE](LICENSE).
