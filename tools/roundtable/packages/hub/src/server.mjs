@@ -397,7 +397,17 @@ export function createHub({
       // The browser stream has no handshake — it just names where it left off.
       conn.meta = { isNode: false, nodeId: null, cursor: Number(url.searchParams.get('cursor') ?? 0) || 0 };
       nodeConnections.add(conn);
-      conn.on('close', () => nodeConnections.delete(conn));
+      // Keepalive. The hub only pushes when something actually happens, so a quiet room leaves
+      // this socket idle — and Cloudflare closes an idle WebSocket at around 100 seconds. The
+      // browser then showed "Offline" permanently, because the client had no reconnect either.
+      // A comment frame well inside that window keeps the connection non-idle. Cleared on close
+      // so a dropped socket does not leak a timer per reconnect.
+      const keepalive = setInterval(() => {
+        try { conn.send(JSON.stringify(encodeFrame('ping', { ts: Date.now() }))); }
+        catch { clearInterval(keepalive); }
+      }, 30000);
+      keepalive.unref?.();
+      conn.on('close', () => { clearInterval(keepalive); nodeConnections.delete(conn); });
       for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId: null })) {
         conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload)));
         conn.meta.cursor = evt.cursor;

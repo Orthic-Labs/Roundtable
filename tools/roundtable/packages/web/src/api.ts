@@ -27,13 +27,40 @@ export const api = {
   handoff: (roomId: string, from_seat_id: string, to_seat_id: string, summary: string, evidence_refs: unknown[], request_id: string) => request<Message>(`/api/rooms/${roomId}/handoffs`, { method: 'POST', body: JSON.stringify({ from_seat_id, to_seat_id, summary, evidence_refs, request_id }) }),
   resolveApproval: (id: string, decision: string, request_id: string) => request<Approval>(`/api/approvals/${id}/resolve`, { method: 'POST', body: JSON.stringify({ decision, request_id }) }),
   replay: (write: QueuedWrite) => request<unknown>(write.path, { method: 'POST', body: JSON.stringify(write.body) }),
+  // Reconnects. Without this, ONE drop was permanent: onclose set offline and nothing ever dialled
+  // again, so the tab stayed dead until a manual reload. Cloudflare closing the idle socket at
+  // ~100s made that the normal case rather than an edge case.
+  //
+  // Backoff is capped and jittered so a hub restart does not bring every open tab back in the same
+  // millisecond. `stopped` guards against a reconnect firing after unmount.
   events(onEvent: (event: ServerEvent) => void, onState: (online: boolean) => void) {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${protocol}//${location.host}/api/events`);
-    socket.onopen = () => onState(true);
-    socket.onclose = () => onState(false);
-    socket.onerror = () => onState(false);
-    socket.onmessage = event => onEvent(JSON.parse(event.data));
-    return () => socket.close();
+    let socket: WebSocket | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+    let stopped = false;
+
+    const connect = () => {
+      if (stopped) return;
+      socket = new WebSocket(`${protocol}//${location.host}/api/events`);
+      socket.onopen = () => { attempt = 0; onState(true); };
+      socket.onmessage = (event) => {
+        const frame = JSON.parse(event.data);
+        // Server keepalive: proves the link is live, carries nothing to render.
+        if (frame?.type === 'ping') return;
+        onEvent(frame);
+      };
+      const retry = () => {
+        onState(false);
+        if (stopped || timer) return;
+        const delay = Math.min(30000, 1000 * 2 ** attempt++) * (0.5 + Math.random() / 2);
+        timer = setTimeout(() => { timer = undefined; connect(); }, delay);
+      };
+      socket.onclose = retry;
+      socket.onerror = retry;
+    };
+    connect();
+
+    return () => { stopped = true; if (timer) clearTimeout(timer); socket?.close(); };
   },
 };
