@@ -7,7 +7,7 @@
 import { createServer } from 'node:http';
 import { createAccessVerifier } from './access-jwt.mjs';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachWebSocket } from './ws.mjs';
 import { log } from './log.mjs';
@@ -123,8 +123,12 @@ function send(res, status, body, extraHeaders = {}) {
 async function serveStatic(pathname, res, webRoot) {
   if (!webRoot) return false;
   // normalize + prefix check defeats ../ traversal before it reaches the filesystem.
-  const candidate = normalize(join(webRoot, pathname === '/' ? 'index.html' : pathname));
-  if (!candidate.startsWith(webRoot)) { send(res, 403, { error: 'forbidden' }); return true; }
+  const root = resolve(webRoot);
+  const candidate = normalize(join(root, pathname === '/' ? 'index.html' : pathname));
+  const fromRoot = relative(root, candidate);
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    send(res, 403, { error: 'forbidden' }); return true;
+  }
 
   let file = candidate;
   try {
