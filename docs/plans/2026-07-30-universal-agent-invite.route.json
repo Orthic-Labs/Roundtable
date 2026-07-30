@@ -1,0 +1,353 @@
+{
+  "schema": "goal-route.v2",
+  "route_id": "roundtable-universal-agent-invite-v1",
+  "purpose": "DELIVERY",
+  "routine": false,
+  "comparison_mode": "COMPARE",
+  "state_a": {
+    "description": "Roundtable has enrolled Mac/Windows nodes and room seats, but no invite capability or provider-neutral join; web asks for session catalogs the hub never returns, node never publishes catalogs, Claude join is refused, Codex starts a separate app-server, and Windows currently reports WSS 521 plus Codex initialization timeout.",
+    "evidence": [
+      {
+        "locator": "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/api.ts",
+        "sha256": "7ad2b8a7f76bb3731be1ca5189c8994f9f20daeebfdf7e99e0b4685b62a781b4",
+        "check": "sessions() requests include_sessions=true."
+      },
+      {
+        "locator": "/Volumes/D/claude/roundtable/tools/roundtable/packages/hub/src/server.mjs",
+        "sha256": "0eaaac7cb256a28086a21b0edfe3e99c590a35912f76335c68303ebcf1985127",
+        "check": "GET /api/nodes returns store.listNodes() only."
+      },
+      {
+        "locator": "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/main.rs",
+        "sha256": "d057599dc0cf2f419e4cb0c6fcc697a2a522fba8aef5a692770a801c946b1928",
+        "check": "session.join and session.leave return explicit out-of-band enrollment error."
+      },
+      {
+        "locator": "tether://run/1335c52e-9eef-429b-924d-399d0808a000/state",
+        "sha256": "2134f21872b43a715c9f9faa67589f504fda4195ebdbc7c1e2fe89cd5e55db04",
+        "check": "User-supplied Windows runtime report records WSS 521 and Codex initialization timeout; live capture is first selected-route step."
+      }
+    ]
+  },
+  "state_b": {
+    "description": "From any active room, Adrian copies one short-lived single-use invite URL, pastes it into the current Codex, Claude, or future-engine chat on an enrolled Mac/Windows node, and that exact chat joins the room without browser/admin/node secrets or a replacement agent session.",
+    "proof": [
+      {
+        "command": "node /Volumes/D/claude/roundtable/tools/roundtable/tests/e2e/invite-join.mjs --production --platforms mac,windows --providers codex,claude --require-current-session",
+        "expected": "Exit 0 and PASS for Mac Codex current task, Windows Codex current task, Mac Claude current session, invite expiry, single use, revocation, replay refusal, no secret leakage, and no replacement child session.",
+        "evidence_path": "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/07-production.json"
+      }
+    ]
+  },
+  "constraints": {
+    "authority": {
+      "rule": "Build universal invite/join design requested in current user message; Cloudflare 30-day correction is separate and already applied.",
+      "evidence_locator": "tether://run/1335c52e-9eef-429b-924d-399d0808a000/state"
+    },
+    "safety": {
+      "rule": "Invite is high-entropy, hashed at rest, short-lived, single-use, room-scoped, revocable, rate-limited, and redeemed only through an authenticated enrolled node; URL contains no admin, node, provider, or browser credential.",
+      "evidence_locator": "https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html"
+    },
+    "scope": {
+      "rule": "IN invite issue/copy/revoke, node redemption, exact current-session binding, Codex/Claude adapters, future-provider interface, Mac/Windows transport restoration, tests, deployment; OUT multi-tenant accounts, public signup, billing, session catalog as join mechanism, unrelated Roundtable defects.",
+      "evidence_locator": "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.tasklist.md"
+    },
+    "quality": {
+      "rule": "Real pasted-link acceptance must join exact current Codex/Claude sessions on Mac/Windows, survive reconnect, refuse replay/expiry/revocation, preserve room least privilege, and prove no replacement session.",
+      "evidence_locator": "/Volumes/D/claude/roundtable/2026-07-22-roundtable-cross-device-architecture.md"
+    },
+    "cost": {
+      "rule": "Reuse current hub, SQLite, node, IPC, MCP, provider adapters, and PWA with zero paid calls, new hosted services, or dependencies.",
+      "evidence_locator": "/Volumes/D/claude/roundtable/tools/roundtable/Cargo.toml"
+    }
+  },
+  "candidates": [
+    {
+      "id": "R_CAPABILITY_NODE",
+      "constraint_status": "PASS",
+      "constraint_evidence": "tether://run/1335c52e-9eef-429b-924d-399d0808a000/state",
+      "steps": [
+        {
+          "id": "R_CAPABILITY_NODE/S1",
+          "operation": "Restore Mac and Windows node-to-hub WSS plus installed Codex app-server initialization, then prove exact current-session identity capture for Codex and Claude without spawning a replacement session.",
+          "depends_on": [],
+          "min_wall_ms": 1800000,
+          "kind": "SAFETY_DEPENDENCY",
+          "b_state_delta": "Both enrolled nodes are live and each provider has a proven exact-current-session binding contract."
+        },
+        {
+          "id": "R_CAPABILITY_NODE/S2",
+          "operation": "Add invite persistence and authenticated browser issue, inspect, revoke, and consume APIs using hashed high-entropy room-scoped single-use tokens with expiry and rate limits.",
+          "depends_on": [],
+          "min_wall_ms": 1200000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Hub can safely issue and lifecycle-manage one room invite capability without exposing operator credentials."
+        },
+        {
+          "id": "R_CAPABILITY_NODE/S3",
+          "operation": "Add node-authenticated invite redemption frames and IPC requests that atomically consume a capability and create or recover one idempotent room seat bound to the calling session.",
+          "depends_on": [
+            "R_CAPABILITY_NODE/S1",
+            "R_CAPABILITY_NODE/S2"
+          ],
+          "min_wall_ms": 1200000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "An enrolled node can redeem one invite into exactly one least-privilege seat for the proven calling-session identity."
+        },
+        {
+          "id": "R_CAPABILITY_NODE/S4",
+          "operation": "Build one local roundtable_join_url MCP channel with provider binders that resume the exact Codex thread, bind the exact Claude channel connection, and expose a stable adapter interface for future engines.",
+          "depends_on": [
+            "R_CAPABILITY_NODE/S3"
+          ],
+          "min_wall_ms": 1800000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Pasting an invite into a supported current chat invokes one provider-neutral join tool and binds that exact chat to its seat."
+        },
+        {
+          "id": "R_CAPABILITY_NODE/S5",
+          "operation": "Replace the dead Attach session control with an accessible Invite agent control that creates, copies, displays expiry, and revokes a room invite without exposing its token after creation.",
+          "depends_on": [
+            "R_CAPABILITY_NODE/S2"
+          ],
+          "min_wall_ms": 900000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Every active room has a visible Google-Meet-style invite action with secure lifecycle controls."
+        },
+        {
+          "id": "R_CAPABILITY_NODE/S6",
+          "operation": "Run deterministic contract, security, reconnect, and real cross-platform pasted-link tests for Mac Codex, Windows Codex, and Claude current sessions.",
+          "depends_on": [
+            "R_CAPABILITY_NODE/S4",
+            "R_CAPABILITY_NODE/S5"
+          ],
+          "min_wall_ms": 1800000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Local and real-device evidence proves exact-session joins plus expiry, revocation, replay refusal, reconnect, and secret boundaries."
+        },
+        {
+          "id": "R_CAPABILITY_NODE/S7",
+          "operation": "Deploy the verified hub, PWA, and Mac/Windows node integrations, then run production pasted-link acceptance and rollback checks.",
+          "depends_on": [
+            "R_CAPABILITY_NODE/S6"
+          ],
+          "min_wall_ms": 1200000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Production Roundtable reaches State B with sealed live acceptance evidence and a tested rollback."
+        }
+      ],
+      "probabilities_bps": {
+        "retry": 2000,
+        "terminal_failure": 500
+      },
+      "retry_cost_ms": 1800000,
+      "rework_cost_ms": 4800000,
+      "nominal_critical_path_ms": 7800000,
+      "expected_time_to_verified_b_ms": 8400000,
+      "cost_units": 2,
+      "risk_units": 3,
+      "rework_units": 3,
+      "status": "SELECTED",
+      "dominance_reason": "Minimum expected time to verified B while keeping one capability contract, one node redemption boundary, and thin provider binders.",
+      "evidence": [
+        "https://www.rfc-editor.org/info/rfc8628/",
+        "https://modelcontextprotocol.io/specification/2025-11-25/schema",
+        "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/ipc.rs"
+      ]
+    },
+    {
+      "id": "R_PROVIDER_SPECIFIC",
+      "constraint_status": "PASS",
+      "constraint_evidence": "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/main.rs",
+      "steps": [
+        {
+          "id": "R_PROVIDER_SPECIFIC/S1",
+          "operation": "Restore cross-platform transports and prove provider session identifiers.",
+          "depends_on": [],
+          "min_wall_ms": 1800000,
+          "kind": "SAFETY_DEPENDENCY",
+          "b_state_delta": "Provider prerequisites are proven."
+        },
+        {
+          "id": "R_PROVIDER_SPECIFIC/S2",
+          "operation": "Add shared invite persistence and browser issue UI.",
+          "depends_on": [],
+          "min_wall_ms": 1200000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Invite links can be created."
+        },
+        {
+          "id": "R_PROVIDER_SPECIFIC/S3",
+          "operation": "Build separate Codex and Claude redemption endpoints, local clients, and credential flows.",
+          "depends_on": [
+            "R_PROVIDER_SPECIFIC/S1",
+            "R_PROVIDER_SPECIFIC/S2"
+          ],
+          "min_wall_ms": 3000000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Two provider-specific join paths exist."
+        },
+        {
+          "id": "R_PROVIDER_SPECIFIC/S4",
+          "operation": "Add provider-specific browser instructions and controls.",
+          "depends_on": [
+            "R_PROVIDER_SPECIFIC/S3"
+          ],
+          "min_wall_ms": 1800000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Users can choose one provider path."
+        },
+        {
+          "id": "R_PROVIDER_SPECIFIC/S5",
+          "operation": "Test both provider-specific paths and their separate failure surfaces.",
+          "depends_on": [
+            "R_PROVIDER_SPECIFIC/S4"
+          ],
+          "min_wall_ms": 2400000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Provider-specific acceptance evidence exists."
+        },
+        {
+          "id": "R_PROVIDER_SPECIFIC/S6",
+          "operation": "Deploy and verify both provider paths.",
+          "depends_on": [
+            "R_PROVIDER_SPECIFIC/S5"
+          ],
+          "min_wall_ms": 1200000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Production supports two duplicated join mechanisms."
+        }
+      ],
+      "probabilities_bps": {
+        "retry": 3000,
+        "terminal_failure": 1000
+      },
+      "retry_cost_ms": 3000000,
+      "rework_cost_ms": 6000000,
+      "nominal_critical_path_ms": 10200000,
+      "expected_time_to_verified_b_ms": 11700000,
+      "cost_units": 4,
+      "risk_units": 6,
+      "rework_units": 7,
+      "status": "REJECTED",
+      "dominance_reason": "Duplicated redemption and credential surfaces increase expected rework and make future engines another full implementation.",
+      "evidence": [
+        "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/main.rs",
+        "/Volumes/D/claude/roundtable/tools/roundtable/packages/claude-channel/src/index.ts"
+      ]
+    },
+    {
+      "id": "R_SESSION_CATALOG_BROWSER",
+      "constraint_status": "FAIL",
+      "constraint_evidence": "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/api.ts",
+      "steps": [
+        {
+          "id": "R_SESSION_CATALOG_BROWSER/S1",
+          "operation": "Publish session catalogs and populate the browser Attach session list.",
+          "depends_on": [],
+          "min_wall_ms": 1800000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Browser can list provider sessions known to a node."
+        },
+        {
+          "id": "R_SESSION_CATALOG_BROWSER/S2",
+          "operation": "Create seats from browser-selected catalog rows.",
+          "depends_on": [
+            "R_SESSION_CATALOG_BROWSER/S1"
+          ],
+          "min_wall_ms": 1200000,
+          "kind": "ADVANCE_B",
+          "b_state_delta": "Browser can attach a catalog row to a room seat."
+        }
+      ],
+      "probabilities_bps": {
+        "retry": 1000,
+        "terminal_failure": 8000
+      },
+      "retry_cost_ms": 1200000,
+      "rework_cost_ms": 6000000,
+      "nominal_critical_path_ms": 3000000,
+      "expected_time_to_verified_b_ms": 7920000,
+      "cost_units": 1,
+      "risk_units": 8,
+      "rework_units": 9,
+      "status": "REJECTED",
+      "dominance_reason": "Fails target constraint: it provides browser selection, not a pasted invite that binds the exact current chat.",
+      "evidence": [
+        "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/api.ts",
+        "/Volumes/D/claude/roundtable/tools/roundtable/packages/hub/src/server.mjs"
+      ]
+    }
+  ],
+  "selected_route_id": "R_CAPABILITY_NODE",
+  "selected_critical_path": [
+    "R_CAPABILITY_NODE/S1",
+    "R_CAPABILITY_NODE/S3",
+    "R_CAPABILITY_NODE/S4",
+    "R_CAPABILITY_NODE/S6",
+    "R_CAPABILITY_NODE/S7"
+  ],
+  "parallel_lanes": [
+    {
+      "id": "root-prerequisites",
+      "steps": [
+        "R_CAPABILITY_NODE/S1",
+        "R_CAPABILITY_NODE/S2"
+      ],
+      "reason": "Runtime/session proof and hub invite persistence touch independent initial surfaces."
+    },
+    {
+      "id": "connector-and-ui",
+      "steps": [
+        "R_CAPABILITY_NODE/S4",
+        "R_CAPABILITY_NODE/S5"
+      ],
+      "reason": "Local provider connector and browser invite UI depend on separate completed contracts and can proceed independently."
+    }
+  ],
+  "bottleneck": {
+    "step_id": "R_CAPABILITY_NODE/S1",
+    "bound_ms": 1800000,
+    "resource": "Real Mac and Windows provider-session identity plus transport evidence"
+  },
+  "deleted_work": [
+    {
+      "item": "Session catalog as join mechanism",
+      "reason": "Catalog listing cannot bind the exact chat where invite URL was pasted."
+    },
+    {
+      "item": "Browser-admin seat provisioning instructions",
+      "reason": "Manual provisioning recreates current defect and fails Google-Meet-style flow."
+    },
+    {
+      "item": "Provider or node secrets inside invite URL",
+      "reason": "Violates least privilege and turns copied link into a durable machine credential."
+    }
+  ],
+  "deferred_work": [
+    {
+      "item": "Additional engine binders beyond Codex and Claude",
+      "until": "Stable adapter contract passes current-session acceptance for both existing providers."
+    },
+    {
+      "item": "Optional session catalog observability",
+      "until": "Invite flow reaches production State B and a separate user need justifies catalog UI."
+    }
+  ],
+  "single_feasible_evidence": [],
+  "invalidation": {
+    "revision": 1,
+    "semantic_correction": "RECOMPILED_FROM_ROOT",
+    "invalidates": [
+      "browser-session-catalog-attachment"
+    ],
+    "source_fingerprint_sha256": "2134f21872b43a715c9f9faa67589f504fda4195ebdbc7c1e2fe89cd5e55db04"
+  },
+  "tether": {
+    "required": true,
+    "run_id": "1335c52e-9eef-429b-924d-399d0808a000",
+    "state_ref": "tether://run/1335c52e-9eef-429b-924d-399d0808a000/state",
+    "checkpoint": "GOAL_ROUTE_V2",
+    "reason": "Cross-platform auth, persistence, IPC, public contract, provider adapters, and production signoff."
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "schema": "minimize-decision.v1",
+  "decision_id": "roundtable-universal-agent-invite",
+  "state_a": "Roundtable has nodes, rooms, seats, provider adapters, browser auth, local IPC, and app-server transport, but no capability invite or exact-current-chat join.",
+  "state_b": "One copied room invite URL joins the exact current Codex, Claude, or future-engine chat through its existing authenticated local node.",
+  "selected_rung": "MIN_CUSTOM",
+  "prior_rungs": [
+    {
+      "rung": "NOT_BUILD",
+      "verdict": "REJECTED",
+      "evidence": "Current product has no invite URL, redemption endpoint, or provider-neutral join contract."
+    },
+    {
+      "rung": "REUSE",
+      "verdict": "REJECTED",
+      "evidence": "Existing seat enrollment, include_sessions query, and SessionCatalog types cannot attach the exact calling chat."
+    },
+    {
+      "rung": "STDLIB",
+      "verdict": "REJECTED",
+      "evidence": "Standard libraries provide random tokens and hashing but not Roundtable room authorization, node routing, or provider session binding."
+    },
+    {
+      "rung": "NATIVE",
+      "verdict": "REJECTED",
+      "evidence": "OS deep links can open an app but cannot bind a Codex or Claude conversation to a Roundtable seat."
+    },
+    {
+      "rung": "INSTALLED_DEP",
+      "verdict": "REJECTED",
+      "evidence": "MCP, Claude Channel, and Codex App Server provide transport primitives; none implements scoped Roundtable invite issue and redemption."
+    },
+    {
+      "rung": "ONE_LINE",
+      "verdict": "REJECTED",
+      "evidence": "Target crosses persistence, auth, wire protocol, IPC, two provider adapters, web UI, and cross-platform runtime acceptance."
+    }
+  ],
+  "allowed_new_files": [
+    "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.tasklist.md",
+    "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.tasklist.receipt.json",
+    "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.tasklist.minimize.json",
+    "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.tasklist.minimize.receipt.json",
+    "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.route.json",
+    "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.route.receipt.json",
+    "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-store/migrations/0003_invites.sql",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/hub/src/invites.test.mjs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/tests/invite_join.rs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/join-channel/package.json",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/join-channel/tsconfig.json",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/join-channel/src/index.ts",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/join-channel/src/ipc.ts",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/join-channel/src/schemas.ts",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/join-channel/src/index.test.ts",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/components/InviteAgent.tsx",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/components/InviteAgent.test.tsx",
+    "/Volumes/D/claude/roundtable/tools/roundtable/tests/e2e/provider-session-probe.mjs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/tests/e2e/invite-join.mjs",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/01-prerequisites.json",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/02-invite-api.txt",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/03-node-redemption.txt",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/04-agent-channel.txt",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/05-pwa.txt",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/06-cross-platform.json",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/07-production.json",
+    "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/blocked.md"
+  ],
+  "allowed_new_dependencies": [],
+  "forbidden_work": [
+    "provider credentials or node bearer tokens in invite URLs",
+    "browser admin session required for agent redemption",
+    "new cloud service or database",
+    "new child agent session substituted for exact current chat",
+    "session catalog treated as invitation mechanism",
+    "commercial multi-tenant identity work"
+  ],
+  "source_refs": [
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/api.ts",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/hub/src/server.mjs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/hub/src/store.mjs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/hub.rs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/main.rs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/ipc.rs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/codex.rs",
+    "/Volumes/D/claude/roundtable/tools/roundtable/packages/claude-channel/src/index.ts",
+    "/Volumes/D/claude/roundtable/2026-07-22-roundtable-cross-device-architecture.md",
+    "tether://run/1335c52e-9eef-429b-924d-399d0808a000/state"
+  ],
+  "revision": 1
+}

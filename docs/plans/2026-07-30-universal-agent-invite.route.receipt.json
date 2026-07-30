@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-07-30T07:46:21.589332+00:00",
+  "expected_time_to_verified_b_ms": 8400000,
+  "route_path": "docs/plans/2026-07-30-universal-agent-invite.route.json",
+  "route_revision": 1,
+  "route_sha256": "bd5bb73bf7f75ca7bfe95809ca7dffcbd7fc76db3717db9833678801a0fcd555",
+  "schema": "goal-route.receipt.v2",
+  "selected_route_id": "R_CAPABILITY_NODE",
+  "validator_sha256": "86a1040d8767e20a7acb0805532311d2bbd61dd02e815e86c689b8cdfd74dd8a",
+  "validator_version": "2.1.0"
+}

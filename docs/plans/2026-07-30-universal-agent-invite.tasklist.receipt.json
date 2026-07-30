@@ -1,0 +1,16 @@
+{
+  "created_at": "2026-07-30T07:46:41.953226+00:00",
+  "expected_time_to_verified_b_ms": 8400000,
+  "route_path": "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.route.json",
+  "route_receipt_path": "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.route.receipt.json",
+  "route_receipt_sha256": "a74ba90071b3cd2ee893521f79b1d9b3866c0423f53f8eedbc452a7e8ef9e3f5",
+  "route_revision": 1,
+  "route_sha256": "bd5bb73bf7f75ca7bfe95809ca7dffcbd7fc76db3717db9833678801a0fcd555",
+  "schema": "tasklist.receipt.v1",
+  "selected_route_id": "R_CAPABILITY_NODE",
+  "task_count": 7,
+  "tasklist_path": "/Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.tasklist.md",
+  "tasklist_sha256": "48e8f376931ce1d1317a5905f673107ee0c7296ba27ef57a846ee1c90497a88c",
+  "validator_sha256": "a8d4d84eb5facb0fb13931f224ca0c62b6b298cac6b38059326f8460395c339d",
+  "validator_version": "1.0.0"
+}

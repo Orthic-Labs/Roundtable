@@ -114,7 +114,7 @@ async function main() {
     plan.push({
       step: 'gate',
       domain,
-      app: { name: `${domain} (Access)`, domain, type: 'self_hosted', session_duration: '24h' },
+      app: { name: `${domain} (Access)`, domain, type: 'self_hosted', session_duration: '720h' },
       policy: { name: allow.name || 'Allow', decision: 'allow', include: allow.include },
     });
   }
