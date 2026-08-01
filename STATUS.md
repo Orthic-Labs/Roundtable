@@ -32,7 +32,7 @@ the Mac node connects over `wss://` with no tunnel. Nothing is outstanding on de
 
 | Piece | Where | State |
 |---|---|---|
-| Hub | Hetzner, pm2 `roundtable-hub`, `172.22.0.1:8460` | running, restart-safe, `pm2 save`d |
+| Hub | Hetzner, pm2 `citadel-hub`, `172.22.0.1:8460` | running, restart-safe, `pm2 save`d |
 | Database | `~/.local/share/roundtable/roundtable.sqlite3` | WAL, migration guarded by `user_version` |
 | Backups | `~/backups/roundtable`, cron 04:15 daily | verified: real backup taken, contents confirmed |
 | PWA | built on the Mac, rsynced to the box | served by the hub at `/` |
@@ -475,7 +475,7 @@ below is live and verified, not written-and-untested.
 | Required by spec | Reality |
 |---|---|
 | `ops/nginx-roundtable.conf` | written and STAGED on the box as `~/sites/nginx/roundtable.conf`; the Dockerfile `COPY` line and rebuild need Adrian's sudo |
-| `ops/ecosystem.config.cjs` | **live** — pm2 `roundtable-hub`, `pm2 save`d, survives restart |
+| `ops/ecosystem.config.cjs` | **live** — pm2 `citadel-hub`, `pm2 save`d, survives restart |
 | `ops/backup.sh` | **live** — cron 04:15; rewritten to use `node:sqlite`'s native `backup()` because the sqlite3 CLI is NOT installed on the box and installing it needs sudo. Verified: real backup taken, contents read back |
 | `ops/install-macos.sh` | **written and used** — builds, writes 0600 config/token, registers a launchd agent. The Mac node is running under it |
 | `ops/install-windows.ps1` | still missing — Windows not started |

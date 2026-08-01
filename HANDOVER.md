@@ -22,7 +22,7 @@ doesn't say `Orthic-Labs/roundtable`, stop and fix that first.
 
 ```
 URL    https://roundtable.spoares.com  (PWA + API + wss node endpoint)
-Hub    Hetzner, pm2 `roundtable-hub`, 0.0.0.0:8460, pm2 save'd
+Hub    Hetzner, pm2 `citadel-hub`, 0.0.0.0:8460, pm2 save'd
 DB     ~/.local/share/roundtable/roundtable.sqlite3 (WAL)
 Backup ~/backups/roundtable, cron 04:15, node:sqlite backup() + integrity_check
 Node   this Mac, launchd com.orthiclabs.roundtable-node, starts at login
@@ -67,12 +67,12 @@ ops/ecosystem.config.cjs`, then `pm2 save`.
 
 ```bash
 # enrol things (box-side CLI — deliberately NOT an HTTP route, it mints credentials)
-ssh vendure 'node ~/sites/roundtable/tools/roundtable/ops/enrol-node.mjs list'
-ssh vendure 'node ~/sites/roundtable/tools/roundtable/ops/enrol-node.mjs node <name>'
-ssh vendure 'node ~/sites/roundtable/tools/roundtable/ops/enrol-node.mjs seat <room> <node> <alias> codex'
+ssh vendure 'node ~/sites/citadel/tools/roundtable/ops/enrol-node.mjs list'
+ssh vendure 'node ~/sites/citadel/tools/roundtable/ops/enrol-node.mjs node <name>'
+ssh vendure 'node ~/sites/citadel/tools/roundtable/ops/enrol-node.mjs seat <room> <node> <alias> codex'
 
 # deploy the hub
-ssh vendure 'cd ~/sites/roundtable && git pull --ff-only origin main && pm2 restart roundtable-hub'
+ssh vendure 'cd ~/sites/citadel && git pull --ff-only origin main && pm2 restart citadel-hub'
 
 # the Mac node
 launchctl print gui/$(id -u)/com.orthiclabs.roundtable-node | grep state
