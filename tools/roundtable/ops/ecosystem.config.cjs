@@ -3,7 +3,7 @@
 // The box runs 15 other Node services under pm2; this matches them deliberately. Because the hub
 // is dependency-free (node:sqlite, node:http, hand-rolled WS), deployment is:
 //
-//   cd ~/sites/roundtable && git pull --ff-only origin main && pm2 restart roundtable-hub
+//   cd ~/sites/citadel && git pull --ff-only origin main && pm2 restart citadel-hub
 //
 // There is nothing to compile and nothing to install. Do NOT add a build step here.
 //
@@ -11,18 +11,18 @@
 // here and not loaded from a shell wrapper — main.mjs reads it from the path below at startup
 // (ROUND_TABLE_ADMIN_TOKEN_FILE). Create it out-of-band, 0600, owned by the user pm2 runs as:
 //
-//   install -m 700 -d ~/.config/roundtable
-//   openssl rand -hex 32 > ~/.config/roundtable/admin-token
-//   chmod 600 ~/.config/roundtable/admin-token
+//   install -m 700 -d ~/.config/citadel
+//   openssl rand -hex 32 > ~/.config/citadel/admin-token
+//   chmod 600 ~/.config/citadel/admin-token
 //
 // Start once with:
 //   pm2 start ops/ecosystem.config.cjs && pm2 save
 
 module.exports = {
   apps: [{
-    name: 'roundtable-hub',
+    name: 'citadel-hub',
     script: 'packages/hub/main.mjs',
-    cwd: '/home/vendure/sites/roundtable/tools/roundtable',
+    cwd: '/home/vendure/sites/citadel/tools/roundtable',
     interpreter: 'node',
     instances: 1,
     exec_mode: 'fork', // single instance: SQLite WAL has one writer and the WS state is in-process
@@ -38,23 +38,23 @@ module.exports = {
       // timeout, while the same container reached :4211 fine. Not publicly exposed: the host
       // firewall does not open 8460 and Cloudflare fronts the only route in (verified after
       // changing this — 8460 is refused from the public internet).
-      ROUND_TABLE_BIND: '0.0.0.0:8460',
+      CITADEL_BIND: '0.0.0.0:8460',
       // Under ~, not /var/lib: the vendure user owns this and needs no sudo to back it up or
       // move it. Nothing on this box requires the database to live outside the home directory.
-      ROUND_TABLE_DATABASE: '/home/vendure/.local/share/roundtable/roundtable.sqlite3',
-      ROUND_TABLE_ADMIN_TOKEN_FILE: '/home/vendure/.config/roundtable/admin-token',
-      ROUND_TABLE_ORIGINS: 'https://roundtable.spoares.com',
+      CITADEL_DATABASE: '/home/vendure/.local/share/citadel/roundtable.sqlite3',
+      CITADEL_ADMIN_TOKEN_FILE: '/home/vendure/.config/citadel/admin-token',
+      CITADEL_ORIGINS: 'https://roundtable.spoares.com',
       // Cloudflare Access fronts this host, so a verified Access assertion authenticates the
       // operator and the admin-token login is not asked for a second time. Neither value is a
       // secret: both appear in the public Access login redirect
       // (/cdn-cgi/access/login/<host>?kid=<aud>). The SECRET half is Cloudflare's signing key,
       // which is never here — the hub fetches the team's PUBLIC keys and verifies against those.
       // Unset these and the feature switches off, leaving the admin token as the only way in.
-      ROUNDTABLE_ACCESS_TEAM_DOMAIN: 'adrdsouza.cloudflareaccess.com',
-      ROUNDTABLE_ACCESS_AUD: 'd5ede6f630edb801c03529809fec76203320b781c9f5eb2d7bca892ab1dadc40',
+      CITADEL_ACCESS_TEAM_DOMAIN: 'adrdsouza.cloudflareaccess.com',
+      CITADEL_ACCESS_AUD: 'd5ede6f630edb801c03529809fec76203320b781c9f5eb2d7bca892ab1dadc40',
     },
-    out_file: '/home/vendure/.pm2/logs/roundtable-hub-out.log',
-    error_file: '/home/vendure/.pm2/logs/roundtable-hub-error.log',
+    out_file: '/home/vendure/.pm2/logs/citadel-hub-out.log',
+    error_file: '/home/vendure/.pm2/logs/citadel-hub-error.log',
     merge_logs: true,
     time: true,
   }],

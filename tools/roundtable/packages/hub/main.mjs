@@ -1,21 +1,23 @@
 #!/usr/bin/env node
 // Node hub entrypoint.
 //
-// Env matches the Rust hub so a swap needs no config change:
-//   ROUND_TABLE_DATABASE      default ./roundtable.sqlite3
-//   ROUND_TABLE_ADMIN_TOKEN   required — no default, ever
-//   ROUND_TABLE_BIND          default 127.0.0.1:8460
-//   ROUND_TABLE_ORIGINS       comma-separated allowed origins for mutations
-//   ROUND_TABLE_INSECURE_COOKIE=1  drop the Secure attribute (local HTTP only)
+// Env matches the Rust hub so a swap needs no config change. CITADEL_* is primary; the
+// deprecated ROUND_TABLE_* names are still honored (one startup warning) via resolveEnv:
+//   CITADEL_DATABASE       (was ROUND_TABLE_DATABASE)      default ./roundtable.sqlite3
+//   CITADEL_ADMIN_TOKEN    (was ROUND_TABLE_ADMIN_TOKEN)   required — no default, ever
+//   CITADEL_BIND           (was ROUND_TABLE_BIND)          default 127.0.0.1:8460
+//   CITADEL_ORIGINS        (was ROUND_TABLE_ORIGINS)       comma-separated allowed origins
+//   CITADEL_INSECURE_COOKIE=1 (was ROUND_TABLE_INSECURE_COOKIE)  drop Secure (local HTTP only)
 
 import { readFileSync } from 'node:fs';
 import { Store } from './src/store.mjs';
 import { createHub } from './src/server.mjs';
 import { log } from './src/log.mjs';
+import { resolveEnv } from './src/env-compat.mjs';
 
-const database = process.env.ROUND_TABLE_DATABASE ?? 'roundtable.sqlite3';
-const bind = process.env.ROUND_TABLE_BIND ?? '127.0.0.1:8460';
-const allowedOrigins = (process.env.ROUND_TABLE_ORIGINS ?? '')
+const database = resolveEnv('CITADEL_DATABASE', 'ROUND_TABLE_DATABASE') ?? 'roundtable.sqlite3';
+const bind = resolveEnv('CITADEL_BIND', 'ROUND_TABLE_BIND') ?? '127.0.0.1:8460';
+const allowedOrigins = (resolveEnv('CITADEL_ORIGINS', 'ROUND_TABLE_ORIGINS') ?? '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 /**
@@ -27,7 +29,7 @@ const allowedOrigins = (process.env.ROUND_TABLE_ORIGINS ?? '')
  * that pm2 merely points at. Same pattern as the node's `BearerToken::load`.
  */
 function loadAdminToken() {
-  const file = process.env.ROUND_TABLE_ADMIN_TOKEN_FILE;
+  const file = resolveEnv('CITADEL_ADMIN_TOKEN_FILE', 'ROUND_TABLE_ADMIN_TOKEN_FILE');
   if (file) {
     try {
       const token = readFileSync(file, 'utf8').trim();
@@ -38,14 +40,14 @@ function loadAdminToken() {
     }
     process.exit(1);
   }
-  return process.env.ROUND_TABLE_ADMIN_TOKEN;
+  return resolveEnv('CITADEL_ADMIN_TOKEN', 'ROUND_TABLE_ADMIN_TOKEN');
 }
 
 const adminToken = loadAdminToken();
 if (!adminToken) {
   // Matches the Rust hub's .expect() — refuse to start rather than run unauthenticated.
   log.error('startup.no_admin_token', {
-    hint: 'set ROUND_TABLE_ADMIN_TOKEN or ROUND_TABLE_ADMIN_TOKEN_FILE',
+    hint: 'set CITADEL_ADMIN_TOKEN or CITADEL_ADMIN_TOKEN_FILE',
   });
   process.exit(1);
 }
@@ -61,7 +63,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 const hub = createHub({
   store: Store.open(database),
   adminToken,
-  secure: process.env.ROUND_TABLE_INSECURE_COOKIE !== '1',
+  secure: resolveEnv('CITADEL_INSECURE_COOKIE', 'ROUND_TABLE_INSECURE_COOKIE') !== '1',
   allowedOrigins,
 });
 
