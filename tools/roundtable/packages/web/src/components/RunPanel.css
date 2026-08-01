@@ -5,8 +5,8 @@
 .run-title{display:flex;align-items:center;gap:8px;background:none;border:0;color:inherit;padding:0;cursor:pointer;text-align:left}
 .run-title .state{font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:2px 6px;border-radius:4px;background:var(--deep);border:1px solid var(--border)}
 .observability{font-size:12px;padding:8px;border-radius:6px;border:1px dashed var(--border);background:color-mix(in srgb, var(--deep) 80%, transparent)}
-.observability.grade-partial{border-color:#a67c52}
-.observability.grade-full{border-color:#3d7a5a}
+.observability.grade-partial{border-color:color-mix(in srgb,var(--warn) 55%,transparent)}
+.observability.grade-full{border-color:color-mix(in srgb,var(--ok) 55%,transparent)}
 .observability p{margin:4px 0 0;color:var(--muted)}
 .unobservable-channel{display:inline-block;margin:2px 4px 0 0;padding:1px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--muted);text-decoration:line-through}
 .run-inspector{display:grid;gap:8px}
@@ -21,4 +21,4 @@
 .task-form{display:grid;gap:8px;margin-top:12px}
 .task-form textarea,.task-form select{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:7px;background:var(--deep);color:var(--text)}
 .task-form textarea{min-height:70px}
-.run .error{color:#c44}
+.run .error{color:var(--bad)}

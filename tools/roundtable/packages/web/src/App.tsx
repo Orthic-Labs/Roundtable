@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import { offlineStore } from './offline';
 import { Login } from './components/Login';
+import { Wordmark } from './components/Wordmark';
+import { useTheme } from './theme';
 import { RoomList } from './components/RoomList';
 import { RoomView } from './components/RoomView';
 import type { Approval, DiscoveredSession, Message, Room, Run, RunEvent, RunInspection, Seat, ServerEvent, Task } from './types';
@@ -20,6 +22,7 @@ export default function App() {
   const [runInspections, setRunInspections] = useState<Record<string, RunInspection>>({});
   const [sessions, setSessions] = useState<DiscoveredSession[]>([]); const [approvals, setApprovals] = useState<Approval[]>([]);
   const [online, setOnline] = useState(navigator.onLine); const active = rooms.find((room) => room.id === activeId);
+  const [theme, toggleTheme] = useTheme();
 
   const load = useCallback(async () => {
     const loadedRooms = await api.rooms(); setRooms(loadedRooms); setActiveId((id) => id || loadedRooms.find((room) => !room.archived_at)?.id); setSessions(await api.sessions());
@@ -49,5 +52,7 @@ export default function App() {
   }), [active, activeId, rooms, messages, seats, online]);
   if (auth === 'loading') return <div className="loading" role="status">Loading Citadel…</div>;
   if (auth === 'out') return <Login onLogin={async (token) => { await api.login(token); setAuth('in'); await load(); }} />;
-  return <div className="shell"><header className="topbar"><div className="wordmark">Cit<span>adel</span></div><span className={`connection ${online ? 'live' : 'lost'}`}>{online ? 'Hub live' : 'Offline'}</span><button onClick={async () => { await api.logout(); setAuth('out'); }}>Sign out</button></header><div className="workspace"><RoomList rooms={rooms} activeId={activeId} onSelect={setActiveId} onCreate={actions.create} onArchive={actions.archive} />{active ? <RoomView room={active} seats={seats[active.id] || []} sessions={sessions} messages={messages[active.id] || []} tasks={tasks[active.id] || []} runs={runs[active.id] || []} runEvents={runEvents} runInspections={runInspections} approvals={approvals} online={online} onSend={actions.send} onLoadOlder={actions.older} onAttach={actions.attach} onDetach={actions.detach} onCreateTask={actions.createTask} onResolve={actions.resolve} onHandoff={actions.handoff} /> : <main className="empty"><h1>Create a room</h1><p>Attach a local session and begin a cross-device conversation.</p></main>}</div></div>;
+  return <div className="shell"><header className="topbar"><Wordmark /><span className={`connection ${online ? 'live' : 'lost'}`}>{online ? 'Hub live' : 'Offline'}</span><button className="theme-toggle" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} onClick={toggleTheme}>{theme === 'dark'
+    ? <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="4.2" stroke="currentColor" strokeWidth="1.7" /><path d="M12 2.5v2.4M12 19.1v2.4M4.6 4.6l1.7 1.7M17.7 17.7l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.6 19.4l1.7-1.7M17.7 6.3l1.7-1.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+    : <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 14.2A8 8 0 0 1 9.8 4 8 8 0 1 0 20 14.2z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" /></svg>}</button><button onClick={async () => { await api.logout(); setAuth('out'); }}>Sign out</button></header><div className="workspace"><RoomList rooms={rooms} activeId={activeId} onSelect={setActiveId} onCreate={actions.create} onArchive={actions.archive} />{active ? <RoomView room={active} seats={seats[active.id] || []} sessions={sessions} messages={messages[active.id] || []} tasks={tasks[active.id] || []} runs={runs[active.id] || []} runEvents={runEvents} runInspections={runInspections} approvals={approvals} online={online} onSend={actions.send} onLoadOlder={actions.older} onAttach={actions.attach} onDetach={actions.detach} onCreateTask={actions.createTask} onResolve={actions.resolve} onHandoff={actions.handoff} /> : <main className="empty"><h1>Create a room</h1><p>Attach a local session and begin a cross-device conversation.</p></main>}</div></div>;
 }
