@@ -10,7 +10,7 @@ test('applies the Rust migration verbatim — same tables, no JS-specific schema
   const store = Store.open(':memory:');
   // Exactly the tables declared by the shared v1 and v2 Rust migrations.
   assert.deepEqual(store.tables(), [
-    'approvals', 'artifacts', 'browser_sessions', 'deliveries', 'events', 'handoffs',
+    'approvals', 'artifacts', 'browser_sessions', 'deliveries', 'events', 'handoffs', 'invites',
     'message_mentions', 'messages', 'nodes', 'request_dedupe', 'rooms', 'run_events',
     'runs', 'seats', 'tasks',
   ]);

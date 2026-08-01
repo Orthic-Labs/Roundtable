@@ -221,6 +221,11 @@ aside { padding: 18px; border-left: 1px solid var(--border); background: color-m
 .seat-list li > span:nth-child(2) { flex: 1; }
 .session { display: block; width: 100%; margin-top: 8px; text-align: left; }
 .approval pre { max-height: 150px; overflow: auto; padding: 10px; border-radius: var(--r2); background: var(--deep); border: 1px solid var(--border); font: 11px var(--font-mono); white-space: pre-wrap; margin: 8px 0; }
+.invite-panel { margin-top: 10px; }
+.invite-panel > button { margin-top: 8px; }
+.invite-code { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r2); background: var(--deep); }
+.invite-code code { font: 600 13px var(--font-mono); color: var(--accent); letter-spacing: .03em; overflow-wrap: anywhere; }
+.invite-list { margin-top: 10px; }
 .actions { display: flex; gap: 8px; }
 details summary { cursor: pointer; color: var(--muted); font: 500 12px var(--font-mono); padding: 4px 0; }
 

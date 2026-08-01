@@ -1,4 +1,4 @@
-import type { Approval, DiscoveredSession, Message, QueuedWrite, Room, Run, RunEvent, RunInspection, Seat, ServerEvent, Task } from './types';
+import type { Approval, CreatedInvite, DiscoveredSession, Invite, Message, QueuedWrite, Room, Run, RunEvent, RunInspection, Seat, ServerEvent, Task } from './types';
 
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -28,6 +28,9 @@ export const api = {
   sessions: async () => (await request<{ nodes: DiscoveredSession[] }>('/api/nodes?include_sessions=true')).nodes ?? [],
   attachSeat: async (roomId: string, session: DiscoveredSession, alias: string) => (await request<{ seat: Seat }>(`/api/rooms/${roomId}/seats`, { method: 'POST', body: JSON.stringify({ ...session, alias, request_id: crypto.randomUUID() }) })).seat,
   detachSeat: (roomId: string, seatId: string) => request<void>(`/api/rooms/${roomId}/seats/${seatId}`, { method: 'DELETE' }),
+  createInvite: async (roomId: string, ttlMs?: number) => (await request<{ invite: CreatedInvite }>(`/api/rooms/${roomId}/invites`, { method: 'POST', body: JSON.stringify({ ttl_ms: ttlMs, request_id: crypto.randomUUID() }) })).invite,
+  listInvites: async (roomId: string) => (await request<{ invites: Invite[] }>(`/api/rooms/${roomId}/invites`)).invites,
+  revokeInvite: async (roomId: string, inviteId: string) => { await request<{ ok: boolean }>(`/api/rooms/${roomId}/invites/${inviteId}`, { method: 'DELETE' }); },
   handoff: async (roomId: string, from_seat_id: string, to_seat_id: string, summary: string, evidence_refs: unknown[], request_id: string) => (await request<{ message: Message }>(`/api/rooms/${roomId}/handoffs`, { method: 'POST', body: JSON.stringify({ from_seat_id, to_seat_id, summary, evidence_refs, request_id }) })).message,
   resolveApproval: (id: string, decision: string, request_id: string) => request<Approval>(`/api/approvals/${id}/resolve`, { method: 'POST', body: JSON.stringify({ decision, request_id }) }),
   replay: (write: QueuedWrite) => request<unknown>(write.path, { method: 'POST', body: JSON.stringify(write.body) }),

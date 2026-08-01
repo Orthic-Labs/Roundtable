@@ -52,6 +52,15 @@ pub enum IpcRequest {
         room_id: Uuid,
     },
     SessionLeave { seat_id: Uuid },
+    /// Invite wire contract v1: redeem a bearer invite code from an attached local session,
+    /// creating (or resuming) a seat. `code` is a bearer token — callers must never log it.
+    RedeemInvite {
+        code: String,
+        #[serde(default)]
+        alias: Option<String>,
+        session_ref: String,
+        provider: String,
+    },
     TranscriptRead {
         room_id: Uuid,
         after_seq: Option<i64>,
@@ -408,6 +417,39 @@ mod tests {
         let bytes = serde_json::to_vec(&req).unwrap();
         let s = String::from_utf8(bytes).unwrap();
         assert!(s.contains("\"method\":\"ping\""), "unexpected: {}", s);
+    }
+
+    #[test]
+    fn redeem_invite_round_trips_with_snake_case_tag() {
+        let json = serde_json::json!({
+            "method": "redeem_invite",
+            "code": "inv_abc123",
+            "alias": "guest-1",
+            "session_ref": "local-session-1",
+            "provider": "claude",
+        });
+        let req: IpcRequest = serde_json::from_value(json).unwrap();
+        match req {
+            IpcRequest::RedeemInvite { code, alias, session_ref, provider } => {
+                assert_eq!(code, "inv_abc123");
+                assert_eq!(alias.as_deref(), Some("guest-1"));
+                assert_eq!(session_ref, "local-session-1");
+                assert_eq!(provider, "claude");
+            }
+            other => panic!("expected RedeemInvite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redeem_invite_alias_defaults_to_none_when_omitted() {
+        let json = serde_json::json!({
+            "method": "redeem_invite",
+            "code": "inv_abc123",
+            "session_ref": "local-session-1",
+            "provider": "claude",
+        });
+        let req: IpcRequest = serde_json::from_value(json).unwrap();
+        assert!(matches!(req, IpcRequest::RedeemInvite { alias: None, .. }));
     }
 
     #[test]

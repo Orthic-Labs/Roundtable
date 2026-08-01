@@ -9,6 +9,7 @@ export const IpcMethod = z.enum([
   "handoff_create",
   "run_create",
   "approval_verdict",
+  "redeem_invite",
   "ping",
 ]);
 export type IpcMethodT = z.infer<typeof IpcMethod>;
@@ -75,4 +76,11 @@ export const RunCreateParams = z.object({
 export const ApprovalVerdictParams = z.object({
   approval_id: z.string().uuid(),
   decision: z.string().min(1),
+});
+/** Invite-code redemption for a Claude-side seat (Citadel invite mechanism, wire contract v1). */
+export const InviteRedeemParams = z.object({
+  code: z.string().min(1),
+  alias: z.string().optional(),
+  session_ref: z.string().min(1),
+  provider: z.literal("claude"),
 });

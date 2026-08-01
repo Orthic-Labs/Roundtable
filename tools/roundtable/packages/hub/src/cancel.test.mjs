@@ -194,7 +194,7 @@ test('a pre-guard database (migrated, user_version 0) is adopted, not re-migrate
 
   const reopened = Store.open(path); // must not throw
   assert.equal(reopened.getRoom(room.id).slug, 'legacy');
-  assert.equal(Number(Object.values(reopened.raw.prepare('PRAGMA user_version').get())[0]), 2,
+  assert.equal(Number(Object.values(reopened.raw.prepare('PRAGMA user_version').get())[0]), 3,
     'the adopted database must be stamped so the next open takes the fast path');
   reopened.close();
   rmSync(dir, { recursive: true, force: true });

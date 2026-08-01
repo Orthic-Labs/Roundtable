@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -5,7 +6,18 @@ import { IpcClient } from "./ipc.js";
 import {
   SessionJoinParams, SessionLeaveParams, TranscriptReadParams,
   TranscriptSearchParams, MessageReplyParams, HandoffCreateParams, RunCreateParams, ApprovalVerdictParams,
+  InviteRedeemParams,
 } from "./schemas.js";
+
+/**
+ * This channel has no existing per-session identity it passes to the node for other tools
+ * (session_join here sends only room_id/seat_id). So citadel_join derives one itself: an
+ * operator-supplied CITADEL_SESSION_REF env var wins if set, otherwise a stable per-process id.
+ * Never logs the invite code plaintext.
+ */
+function deriveSessionRef(): string {
+  return process.env.CITADEL_SESSION_REF || `claude-${hostname()}-${process.pid}`;
+}
 
 export interface ClaudeChannelOptions {
   socketPath: string;
@@ -98,6 +110,26 @@ export function createChannel(opts: ClaudeChannelOptions): { server: McpServer; 
       const p = ApprovalVerdictParams.parse(args);
       const resp = await client.request("approval_verdict", p as unknown as Record<string, unknown>);
       return { content: [{ type: "text", text: JSON.stringify(resp) }] };
+    },
+  );
+
+  server.tool(
+    "citadel_join",
+    "Redeem a Citadel invite code to join a Roundtable room as a Claude seat.",
+    { code: z.string().min(1), alias: z.string().optional() },
+    async (args) => {
+      const p = InviteRedeemParams.parse({
+        code: args.code,
+        alias: args.alias,
+        session_ref: deriveSessionRef(),
+        provider: "claude",
+      });
+      const resp = await client.request("redeem_invite", p as unknown as Record<string, unknown>);
+      if (!resp.ok) {
+        return { content: [{ type: "text", text: `invite redemption failed: ${resp.error ?? "unknown_error"}` }], isError: true };
+      }
+      const seat = (resp.payload as Record<string, unknown>).alias ?? (resp.payload as Record<string, unknown>).seat_id ?? "seat";
+      return { content: [{ type: "text", text: `Joined as ${String(seat)}. ${JSON.stringify(resp.payload)}` }] };
     },
   );
 

@@ -10,7 +10,7 @@ use roundtable_node::{
     state::NodeState,
     NodeError, NodeResult,
 };
-use roundtable_protocol::{DeliveryState, MessageKind, SeatProvider};
+use roundtable_protocol::{DeliveryState, MessageKind, Seat, SeatProvider};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -436,6 +436,35 @@ async fn handle_ipc_request(
                 Err(_) => IpcResponse::err(id, "hub dropped the delegate without responding"),
             }
         }
+        IpcRequest::RedeemInvite { code, alias, session_ref, provider } => {
+            let alias = alias.unwrap_or_else(|| format!("{provider}-invite"));
+            // `code` is a bearer token — it must reach the hub in the query body and nowhere
+            // else (no tracing::* call in this arm touches it).
+            let query = serde_json::json!({
+                "redeem_invite": {
+                    "code": code, "alias": alias, "session_ref": session_ref, "provider": provider,
+                },
+            });
+            let result = match client.query(query).await {
+                Ok(v) => v,
+                // The hub error string (invalid_invite | invite_expired | invite_used |
+                // invite_revoked | unknown_room) IS the wire contract a caller matches on;
+                // forward it verbatim instead of NodeError's Display wrapper.
+                Err(NodeError::Provider(msg)) => return IpcResponse::err(id, msg),
+                Err(e) => return IpcResponse::err(id, e.to_string()),
+            };
+            let seat: Seat = match serde_json::from_value(result["seat"].clone()) {
+                Ok(seat) => seat,
+                Err(e) => return IpcResponse::err(id, format!("hub returned a malformed seat: {e}")),
+            };
+            // Bind this IPC session to the redeemed seat exactly the way DeliveryAssign binds an
+            // already-attached session above: register_seat is what owns_seat gates PostMessage/
+            // Handoff/RunCreate on, and routing.rooms is what those same handlers resolve a
+            // room_id from. Skipping either would leave a redeemed seat unable to act.
+            client.register_seat(seat.id).await;
+            routing.rooms.lock().await.insert(seat.id, seat.room_id);
+            IpcResponse::ok(id, serde_json::json!({ "seat": seat }))
+        }
         IpcRequest::ApprovalVerdict { .. } => {
             IpcResponse::err(id, "approval.verdict is not implemented for claude seats")
         }
@@ -640,4 +669,187 @@ async fn handle_codex_event(
     }).await;
     // actor_kind is not part of ClientCommand::PostMessage — the hub derives it server-side from
     // seat_id (see handleNodeMessagePost's `actorKind: 'agent'`), so there is nothing to set here.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use roundtable_node::hub::HelloAccepted;
+    use roundtable_protocol::PROTOCOL_VERSION;
+    use tokio::sync::mpsc;
+
+    /// A `HubTransport` double that answers `node.hello` with `hello.accepted` and any
+    /// `node.query` carrying `redeem_invite` with a canned `query.result` seat (or, when
+    /// configured, a canned hub refusal). No socket and no external fixture — this exercises
+    /// `handle_ipc_request`'s `RedeemInvite` arm (query the hub, parse the seat, bind the
+    /// session) against the same `HubTransport` trait the real WebSocket/TCP transports
+    /// implement, in-process.
+    struct ScriptedHub {
+        inbound_tx: mpsc::UnboundedSender<Vec<u8>>,
+        inbound_rx: Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
+        refuse_redeem_with: Option<String>,
+    }
+
+    impl ScriptedHub {
+        fn new(refuse_redeem_with: Option<String>) -> Self {
+            let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+            Self { inbound_tx, inbound_rx: Mutex::new(inbound_rx), refuse_redeem_with }
+        }
+    }
+
+    #[async_trait]
+    impl HubTransport for ScriptedHub {
+        async fn send_frame(&self, frame: &[u8]) -> NodeResult<()> {
+            let env: serde_json::Value = serde_json::from_slice(frame).unwrap();
+            match env["type"].as_str().unwrap_or_default() {
+                "node.hello" => {
+                    let accepted = HelloAccepted {
+                        node_id: Uuid::now_v7(),
+                        heartbeat_ms: 60_000,
+                        resume_cursor: 0,
+                        seat_tokens: vec![],
+                    };
+                    let reply = serde_json::json!({
+                        "version": PROTOCOL_VERSION, "event_id": Uuid::now_v7(), "sent_at_ms": 0i64,
+                        "type": "hello.accepted", "payload": accepted,
+                    });
+                    let _ = self.inbound_tx.send(serde_json::to_vec(&reply).unwrap());
+                }
+                "node.query" => {
+                    let query_request = &env["payload"]["query_request"];
+                    let request_id = query_request["request_id"].clone();
+                    let query = &query_request["query"];
+                    let result = if let Some(err) = &self.refuse_redeem_with {
+                        serde_json::json!({
+                            "query_result": {
+                                "request_id": request_id, "ok": false,
+                                "result": null, "error": err,
+                            },
+                        })
+                    } else if let Some(redeem) = query.get("redeem_invite") {
+                        let seat = serde_json::json!({
+                            "id": Uuid::now_v7(), "room_id": Uuid::now_v7(), "node_id": Uuid::now_v7(),
+                            "alias": redeem["alias"], "provider": "claude",
+                            "session_ref": redeem["session_ref"], "state": "idle",
+                            "last_seen_ms": 0i64, "last_ack_seq": 0i64,
+                        });
+                        serde_json::json!({
+                            "query_result": {
+                                "request_id": request_id, "ok": true,
+                                "result": { "seat": seat }, "error": null,
+                            },
+                        })
+                    } else {
+                        serde_json::json!({
+                            "query_result": {
+                                "request_id": request_id, "ok": false,
+                                "result": null, "error": "unknown_query",
+                            },
+                        })
+                    };
+                    let reply = serde_json::json!({
+                        "version": PROTOCOL_VERSION, "event_id": Uuid::now_v7(), "sent_at_ms": 0i64,
+                        "type": "query.result", "payload": result,
+                    });
+                    let _ = self.inbound_tx.send(serde_json::to_vec(&reply).unwrap());
+                }
+                other => panic!("ScriptedHub received an unexpected frame kind: {other}"),
+            }
+            Ok(())
+        }
+
+        async fn recv_frame(&self) -> NodeResult<Option<Vec<u8>>> {
+            Ok(self.inbound_rx.lock().await.recv().await)
+        }
+
+        async fn close(&self) -> NodeResult<()> {
+            Ok(())
+        }
+    }
+
+    fn test_config(state_path: PathBuf) -> NodeConfig {
+        NodeConfig {
+            hub_url: "ws://localhost".into(),
+            node_id: Uuid::now_v7(),
+            hostname: "t".into(),
+            os: "test".into(),
+            version: "0.0.1".into(),
+            ipc_socket_path: PathBuf::from("/tmp/roundtable-ipc-redeem-test"),
+            state_path,
+            codex_command: vec!["fake-codex.mjs".into()],
+            codex_cwd: None,
+            reconnect_base_ms: 1000,
+            heartbeat_ms: 60_000,
+            heartbeat_offline_after_ms: 200_000,
+        }
+    }
+
+    /// Builds a `HubClient` wired to a `ScriptedHub` and never lets a second connect attempt
+    /// happen mid-test (heartbeat is far outside the test's real-time budget).
+    async fn client_with_scripted_hub(refuse_redeem_with: Option<String>) -> HubClient {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        std::mem::forget(dir); // outlive the client; NodeState never writes past setup here
+        let cfg = test_config(state_path.clone());
+        let state = Arc::new(Mutex::new(NodeState::load_or_default(&state_path).unwrap()));
+        let factory: Arc<dyn Fn() -> NodeResult<Box<dyn HubTransport>> + Send + Sync> =
+            Arc::new(move || {
+                Ok(Box::new(ScriptedHub::new(refuse_redeem_with.clone())) as Box<dyn HubTransport>)
+            });
+        HubClient::new(cfg, "test-token".into(), state, factory)
+    }
+
+    #[tokio::test]
+    async fn redeem_invite_queries_the_hub_and_binds_the_seat() {
+        let client = client_with_scripted_hub(None).await;
+        let routing = Arc::new(SeatRouting::default());
+
+        let req = IpcRequest::RedeemInvite {
+            code: "inv_super_secret".into(),
+            alias: Some("guest-1".into()),
+            session_ref: "local-session-1".into(),
+            provider: "claude".into(),
+        };
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle_ipc_request(req, &client, &routing),
+        ).await.expect("redeem_invite must not hang");
+
+        assert!(resp.ok, "expected ok, got error {:?}", resp.error);
+        assert_eq!(resp.payload["seat"]["alias"], "guest-1");
+        assert_eq!(resp.payload["seat"]["session_ref"], "local-session-1");
+        let seat_id = Uuid::parse_str(resp.payload["seat"]["id"].as_str().unwrap()).unwrap();
+        let room_id = Uuid::parse_str(resp.payload["seat"]["room_id"].as_str().unwrap()).unwrap();
+
+        // Binding: subsequent hub->node deliveries for this seat must resolve exactly as an
+        // already-attached (DeliveryAssign-bound) session would.
+        assert!(client.owns_seat(seat_id).await, "redeem must register_seat like DeliveryAssign does");
+        assert_eq!(
+            routing.rooms.lock().await.get(&seat_id).copied(), Some(room_id),
+            "redeem must populate routing.rooms so MessageReply/HandoffCreate/RunCreate can resolve a room_id",
+        );
+    }
+
+    #[tokio::test]
+    async fn redeem_invite_forwards_the_hub_error_verbatim() {
+        let client = client_with_scripted_hub(Some("invite_expired".into())).await;
+        let routing = Arc::new(SeatRouting::default());
+
+        let req = IpcRequest::RedeemInvite {
+            code: "inv_expired".into(),
+            alias: None,
+            session_ref: "local-session-1".into(),
+            provider: "claude".into(),
+        };
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle_ipc_request(req, &client, &routing),
+        ).await.expect("redeem_invite must not hang");
+
+        assert!(!resp.ok);
+        // The hub error string is the wire contract a caller matches on — it must arrive
+        // unwrapped, not dressed in NodeError's Display prefix ("provider error: ...").
+        assert_eq!(resp.error.as_deref(), Some("invite_expired"));
+    }
 }

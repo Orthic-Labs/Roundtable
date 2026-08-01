@@ -88,6 +88,8 @@ const ROUTES = [
   ['GET', '/api/rooms/:room_id/runs'], ['GET', '/api/runs/:run_id'], ['GET', '/api/runs/:run_id/events'],
   ['GET', '/api/rooms/:room_id/seats'], ['POST', '/api/rooms/:room_id/seats'],
   ['DELETE', '/api/rooms/:room_id/seats/:seat_id'],
+  ['GET', '/api/rooms/:room_id/invites'], ['POST', '/api/rooms/:room_id/invites'],
+  ['DELETE', '/api/rooms/:room_id/invites/:invite_id'],
   ['POST', '/api/rooms/:room_id/handoffs'],
   ['POST', '/api/approvals/:approval_id/resolve'],
   ['POST', '/api/deliveries/:delivery_id/cancel'],
@@ -468,6 +470,25 @@ export function createHub({
           else send(res, 404, { error: 'unknown_seat' });
           return;
         }
+        case '/api/rooms/:room_id/invites': {
+          const room = store.getRoom(roomId);
+          if (!room) { send(res, 404, { error: 'unknown_room' }); return; }
+          if (req.method === 'GET') {
+            send(res, 200, { invites: store.listInvites(roomId) });
+            return;
+          }
+          const body = await readBody(req);
+          const ttlMs = Number.isFinite(body?.ttl_ms) ? Number(body.ttl_ms) : undefined;
+          const invite = store.createInvite({ roomId, ...(ttlMs !== undefined ? { ttlMs } : {}) });
+          send(res, 200, { invite });
+          return;
+        }
+        case '/api/rooms/:room_id/invites/:invite_id': {
+          const revoked = store.revokeInvite(roomId, route.params.invite_id);
+          if (revoked) send(res, 200, { ok: true });
+          else send(res, 404, { error: 'unknown_invite' });
+          return;
+        }
         case '/api/rooms/:room_id/handoffs': {
           const body = await readBody(req);
           const normalized = normalizeCreateHandoff(body);
@@ -827,6 +848,25 @@ export function createHub({
     try {
       const [kind] = Object.keys(query);
       const args = query[kind] ?? {};
+
+      // Bootstrapping case: a node redeeming an invite does not hold a seat in the room yet — that
+      // is the whole point of redeeming — so this kind is handled before the room-membership gate
+      // below, which every other query kind requires.
+      if (kind === 'redeem_invite') {
+        try {
+          const seat = store.redeemInvite({
+            code: args.code, nodeId, alias: args.alias, provider: args.provider, sessionRef: args.session_ref,
+          });
+          // Same event type/shape the seat-presence path emits, so operators see the new seat live
+          // without a special case in the PWA.
+          publish('seat.presence', toSeat(seat));
+          reply(true, { seat: toSeat(seat) });
+        } catch (err) {
+          reply(false, null, err.message || 'invalid_invite');
+        }
+        return;
+      }
+
       const roomId = args.room_id;
       if (!roomId || !store.nodeHasSeatInRoom(nodeId, roomId)) {
         // Same answer for "no such room" and "not your room" — distinguishing them would let a

@@ -10,11 +10,11 @@
 // on the dev Mac today.
 
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { hashSecretBytes, tokenMatches } from './auth.mjs';
+import { hashSecret, hashSecretBytes, tokenMatches } from './auth.mjs';
 import { OPERATOR_TARGET } from './dto.mjs';
 import { assertDeliveryTransition, canTransitionDelivery } from './transitions.mjs';
 
@@ -65,7 +65,10 @@ export class Store {
         const hasTaskRuns = db
           .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'")
           .get();
-        currentVersion = hasTaskRuns ? 2 : 1;
+        const hasInvites = db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='invites'")
+          .get();
+        currentVersion = hasInvites ? 3 : (hasTaskRuns ? 2 : 1);
         db.exec(`PRAGMA user_version = ${currentVersion}`);
       } else {
         let sql;
@@ -88,6 +91,25 @@ export class Store {
       }
       db.exec(sql);
       db.exec('PRAGMA user_version = 2');
+    }
+    // v3: room-scoped, single-use invite codes (Citadel invite mechanism). Inline, not an
+    // external migration file — this table exists only on the Node hub side of the wire contract
+    // today, so there is no Rust migration to stay verbatim with (contrast v1/v2 above).
+    if (currentVersion < 3) {
+      db.exec(`
+        CREATE TABLE invites (
+            id TEXT PRIMARY KEY,
+            room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+            code_hash TEXT NOT NULL UNIQUE,
+            created_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER NOT NULL,
+            redeemed_at_ms INTEGER,
+            redeemed_seat_id TEXT REFERENCES seats(id) ON DELETE SET NULL,
+            revoked_at_ms INTEGER
+        );
+        CREATE INDEX invites_room_created ON invites(room_id, created_at_ms);
+      `);
+      db.exec('PRAGMA user_version = 3');
     }
     return new Store(db);
   }
@@ -286,6 +308,96 @@ export class Store {
       .prepare('UPDATE seats SET state = ?, last_ack_seq = ?, last_seen_ms = ? WHERE id = ? AND node_id = ?')
       .run(state, lastAckSeq, Date.now(), seatId, nodeId).changes > 0;
     return changed ? this.getSeat(seatId) : null;
+  }
+
+  // ---- invites -------------------------------------------------------------
+
+  /**
+   * "cit_" + 26 chars from [a-z2-7] (RFC4648 base32 lowercase, no padding).
+   * 256 % 32 === 0, so `byte % 32` over crypto-random bytes is exactly uniform — no rejection
+   * sampling needed to avoid modulo bias.
+   */
+  static #INVITE_CODE_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+
+  static #randomInviteCode() {
+    const bytes = randomBytes(26);
+    let body = '';
+    for (let i = 0; i < 26; i += 1) body += Store.#INVITE_CODE_ALPHABET[bytes[i] % 32];
+    return `cit_${body}`;
+  }
+
+  /**
+   * Issue a single-use, room-scoped invite. The plaintext code is returned ONCE, right here — only
+   * sha256(code) is ever persisted (same reasoning as node tokens: a hub compromise must not be
+   * enough to mint working credentials for a room it already has).
+   */
+  createInvite({ id = randomUUID(), roomId, ttlMs = 3600000 }) {
+    const code = Store.#randomInviteCode();
+    const now = Date.now();
+    const expiresAtMs = now + ttlMs;
+    this.#db
+      .prepare('INSERT INTO invites (id, room_id, code_hash, created_at_ms, expires_at_ms) VALUES (?, ?, ?, ?, ?)')
+      .run(id, roomId, hashSecret(code), now, expiresAtMs);
+    return { id, room_id: roomId, code, created_at_ms: now, expires_at_ms: expiresAtMs };
+  }
+
+  #inviteState(row) {
+    if (row.revoked_at_ms) return 'revoked';
+    if (row.redeemed_at_ms) return 'redeemed';
+    if (Date.now() > row.expires_at_ms) return 'expired';
+    return 'active';
+  }
+
+  /** Operator-facing list. Never includes the code or its hash — those are credentials, not status. */
+  listInvites(roomId) {
+    return this.#db
+      .prepare('SELECT * FROM invites WHERE room_id = ? ORDER BY created_at_ms DESC')
+      .all(roomId)
+      .map((row) => ({
+        id: row.id,
+        room_id: row.room_id,
+        created_at_ms: row.created_at_ms,
+        expires_at_ms: row.expires_at_ms,
+        state: this.#inviteState(row),
+      }));
+  }
+
+  /** Returns false if the invite is unknown, in a different room, or already redeemed/revoked. */
+  revokeInvite(roomId, id) {
+    return this.#db
+      .prepare('UPDATE invites SET revoked_at_ms = ? WHERE id = ? AND room_id = ? AND revoked_at_ms IS NULL AND redeemed_at_ms IS NULL')
+      .run(Date.now(), id, roomId).changes > 0;
+  }
+
+  /**
+   * Redeem a code into a seat.
+   *
+   * One transaction: the invite is marked redeemed in the SAME transaction that creates the seat,
+   * so a crash between the two can never leave a redeemed invite with no seat behind it, or a seat
+   * whose invite is still live and redeemable by someone else.
+   *
+   * Throws a StoreError whose message is exactly one of the wire contract's error codes:
+   * invalid_invite (no such code), invite_revoked, invite_used, invite_expired, unknown_room (the
+   * room was deleted or archived out from under a still-live invite).
+   */
+  redeemInvite({ code, nodeId, alias, provider, sessionRef }) {
+    return this.tx(() => {
+      const row = this.#db.prepare('SELECT * FROM invites WHERE code_hash = ?').get(hashSecret(String(code ?? '')));
+      if (!row) throw new StoreError('invalid_invite');
+      if (row.revoked_at_ms) throw new StoreError('invite_revoked');
+      if (row.redeemed_at_ms) throw new StoreError('invite_used');
+      if (Date.now() > row.expires_at_ms) throw new StoreError('invite_expired');
+      const room = this.getRoom(row.room_id);
+      if (!room || room.archived_at_ms) throw new StoreError('unknown_room');
+
+      const seat = this.createSeat({
+        roomId: row.room_id, nodeId, alias, provider, sessionRef, state: 'idle',
+      });
+      this.#db
+        .prepare('UPDATE invites SET redeemed_at_ms = ?, redeemed_seat_id = ? WHERE id = ?')
+        .run(Date.now(), seat.id, row.id);
+      return seat;
+    });
   }
 
   // ---- messages ----------------------------------------------------------
