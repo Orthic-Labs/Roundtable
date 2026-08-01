@@ -1,3 +1,24 @@
-.runs .run{display:grid;gap:4px;padding:9px 0;border-bottom:1px solid var(--border)}
-.runs .run:last-of-type{margin-bottom:10px}.run small,.muted{color:var(--muted)}
-.task-form{display:grid;gap:8px;margin-top:12px}.task-form textarea,.task-form select{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:7px;background:var(--deep);color:var(--text)}.task-form textarea{min-height:70px}
+.runs .run{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid var(--border)}
+.runs .run:last-of-type{margin-bottom:10px}
+.run small,.muted{color:var(--muted)}
+.run-head{display:grid;gap:2px}
+.run-title{display:flex;align-items:center;gap:8px;background:none;border:0;color:inherit;padding:0;cursor:pointer;text-align:left}
+.run-title .state{font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:2px 6px;border-radius:4px;background:var(--deep);border:1px solid var(--border)}
+.observability{font-size:12px;padding:8px;border-radius:6px;border:1px dashed var(--border);background:color-mix(in srgb, var(--deep) 80%, transparent)}
+.observability.grade-partial{border-color:#a67c52}
+.observability.grade-full{border-color:#3d7a5a}
+.observability p{margin:4px 0 0;color:var(--muted)}
+.unobservable-channel{display:inline-block;margin:2px 4px 0 0;padding:1px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--muted);text-decoration:line-through}
+.run-inspector{display:grid;gap:8px}
+.run-inspector h3{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.run-packet summary{cursor:pointer;font-size:12px;color:var(--muted)}
+.run-packet pre,.run-event-payload{margin:6px 0 0;padding:8px;border-radius:6px;background:var(--deep);border:1px solid var(--border);font-size:11px;overflow:auto;max-height:180px;white-space:pre-wrap}
+.run-timeline{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.run-event-toggle{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--deep);color:inherit;cursor:pointer;text-align:left;font:inherit}
+.run-event-toggle:disabled{cursor:default;opacity:.85}
+.run-event-seq{color:var(--muted);font-size:11px}
+.run-event-type{font-weight:600;font-size:12px}
+.task-form{display:grid;gap:8px;margin-top:12px}
+.task-form textarea,.task-form select{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:7px;background:var(--deep);color:var(--text)}
+.task-form textarea{min-height:70px}
+.run .error{color:#c44}

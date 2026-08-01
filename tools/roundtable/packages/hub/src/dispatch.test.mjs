@@ -301,11 +301,13 @@ test('a connected node cannot post as a seat owned by another node', async () =>
 });
 
 test('a node can report its own delivery state, approval, and presence', async () => {
-  await withHub(async ({ store, room, node, seat, wsBase }) => {
+  await withHub(async ({ hub, store, room, node, seat, wsBase }) => {
     const client = await connectAsNode(wsBase, node.id);
     const { run, delivery } = store.createTask({
       roomId: room.id, executorSeatId: seat.id, title: 'x', instructions: 'x',
     });
+    hub.flushDeliveries();
+    client.send(nodeFrame(NodeFrame.DELIVERY_ACK, { delivery_ack: { delivery_id: delivery.id } }));
     client.send(nodeFrame(NodeFrame.DELIVERY_STATE, {
       delivery_state: { delivery_id: delivery.id, state: 'running', error_code: null },
     }));

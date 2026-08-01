@@ -7,6 +7,7 @@ export const IpcMethod = z.enum([
   "transcript_search",
   "message_reply",
   "handoff_create",
+  "run_create",
   "approval_verdict",
   "ping",
 ]);
@@ -63,6 +64,13 @@ export const HandoffCreateParams = z.object({
   to_alias: z.string().min(1),
   body: z.string().min(1).max(64 * 1024),
   evidence_refs: z.array(z.string()).default([]),
+});
+/** Agent-authored durable task/run — Citadel `delegate` / `run.create`. */
+export const RunCreateParams = z.object({
+  from_seat_id: z.string().uuid(),
+  executor_alias: z.string().min(1),
+  title: z.string().min(1).max(512),
+  instructions: z.string().min(1).max(64 * 1024),
 });
 export const ApprovalVerdictParams = z.object({
   approval_id: z.string().uuid(),

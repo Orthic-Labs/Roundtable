@@ -30,6 +30,14 @@ export const HubFrame = Object.freeze({
    * a new frame pair rather than reusing one.
    */
   QUERY_RESULT: 'query.result',
+  /**
+   * Hub-commit acknowledgement for an outbound node mutation (Citadel 6.7 / P1 item 9).
+   *
+   * Payload is serde-tagged `{ mutation_result: { request_id, status, entity_id?, commit_cursor?, error? } }`.
+   * `status` is `committed` | `replayed` | `rejected`. The node removes the outbox row only on
+   * committed/replayed — never on the socket write alone.
+   */
+  MUTATION_RESULT: 'mutation.result',
 });
 
 /** Frames a node sends to the hub. */
@@ -43,6 +51,14 @@ export const NodeFrame = Object.freeze({
   HANDOFF_CREATE: 'node.handoff.create',
   APPROVAL_REQUEST: 'node.approval.request',
   SEAT_PRESENCE: 'node.seat.presence',
+  /**
+   * Agent-authored durable task/run creation (Citadel 6.4 / P1 item 11).
+   *
+   * Payload: `{ run_create: { request_id, room_id, from_seat_id, executor_seat_id, title, instructions } }`.
+   * Answered with `mutation.result` carrying `entity_id` = run_id (and task_id in error-free path
+   * via the committed row lookup).
+   */
+  RUN_CREATE: 'node.run.create',
   /**
    * A read request from a node, answered with exactly one `query.result`.
    *

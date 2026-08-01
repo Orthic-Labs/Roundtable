@@ -1,8 +1,11 @@
 export type SeatState = 'detached' | 'offline' | 'idle' | 'running' | 'waiting_approval' | 'error';
+/** Harness family — orthogonal to concrete model id (Citadel model/harness/session split). */
+export type SeatProvider = 'claude' | 'codex' | 'minimax' | 'ccx' | 'cdx' | 'other';
+export type SeatHarness = 'claude_code' | 'codex_app_server' | 'ccx' | 'cdx' | 'generic_cli';
 export type MessageKind = 'chat' | 'question' | 'progress' | 'completion' | 'handoff' | 'approval' | 'system';
 export type DeliveryState = 'queued' | 'sent' | 'acked' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'dead_letter';
 export type EvidenceRef = { kind: 'commit' | 'test' | 'artifact' | 'url'; value: string };
-export type Seat = { id: string; room_id: string; node_id: string; alias: string; provider: 'claude' | 'codex'; session_ref: string; state: SeatState; last_seen_ms: number; last_ack_seq: number };
+export type Seat = { id: string; room_id: string; node_id: string; alias: string; provider: SeatProvider; session_ref: string; state: SeatState; last_seen_ms: number; last_ack_seq: number; harness?: SeatHarness; model?: string };
 export type DiscoveredSession = { node_id: string; node_name: string; provider: Seat['provider']; session_ref: string; title: string; attached_seat_id?: string };
 export type Message = { id: string; room_id: string; seq: number; actor_id: string; actor: string; actor_kind: 'human' | 'agent' | 'system'; kind: MessageKind; body: string; reply_to?: string; mentioned_seat_ids: string[]; created_at_ms: number; delivery_state?: DeliveryState; pending?: boolean; handoff?: { from_alias: string; to_alias: string; summary: string; evidence_refs: EvidenceRef[] } };
 export type Room = { id: string; slug: string; title: string; objective: string; next_seq: number; archived_at?: number };
@@ -11,6 +14,8 @@ export type TaskState = 'queued' | 'running' | 'waiting_approval' | 'completed' 
 export type Task = { id: string; room_id: string; requested_by_seat_id?: string; executor_seat_id: string; title: string; instructions: string; state: TaskState; created_at_ms: number; updated_at_ms: number };
 export type Run = { id: string; task_id: string; room_id: string; executor_seat_id: string; delivery_id: string; state: TaskState; reasoning_model?: string; execution_runtime?: string; tool_executor?: string; observability_grade: 'partial' | 'full'; error_code?: string; started_at_ms?: number; finished_at_ms?: number };
 export type RunEvent = { id: string; run_id: string; seq: number; type: string; payload: Record<string, unknown>; created_at_ms: number };
+export type RunArtifact = { id: string; run_id: string; kind: string; locator: string; digest?: string; metadata: Record<string, unknown>; created_at_ms: number };
+export type RunInspection = { run: Run; events: RunEvent[]; artifacts: RunArtifact[]; lineage: { task_id: string; delegated_from_seat_id: string | null; executor_seat_id: string } };
 export type QueueKind = 'message' | 'handoff' | 'approval';
 export type QueuedWrite = { request_id: string; kind: QueueKind; path: string; body: unknown; created_at_ms: number; attempt_at_ms: number };
 export type Snapshot = { rooms: Room[]; messages: Record<string, Message[]>; seats: Record<string, Seat[]>; approvals: Approval[] };

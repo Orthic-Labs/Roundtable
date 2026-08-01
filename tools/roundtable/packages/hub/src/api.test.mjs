@@ -30,7 +30,7 @@ test('API: PATCH /api/rooms/:id archives — the route the X button calls', asyn
     const room = store.createRoom({ slug: 'doomed', title: 'Doomed' });
 
     const res = await api(`/api/rooms/${room.id}`, {
-      method: 'PATCH', body: JSON.stringify({ archived: true }),
+      method: 'PATCH', body: JSON.stringify({ archived: true, request_id: crypto.randomUUID() }),
     });
     assert.equal(res.status, 200, 'archive must not 404');
 
@@ -38,7 +38,8 @@ test('API: PATCH /api/rooms/:id archives — the route the X button calls', asyn
     // archiveRoom() returns a boolean; the client types this as a Room, so the handler must
     // re-read the row rather than pass that through.
     assert.equal(typeof body.room, 'object');
-    assert.ok(body.room.archived_at_ms, 'the room must actually be archived');
+    assert.ok(body.room.archived_at, 'PWA expects archived_at, not archived_at_ms');
+    assert.equal(body.room.archived_at_ms, undefined);
     assert.equal(store.listRooms().find((r) => r.id === room.id), undefined, 'drops out of the listing');
   });
 });
@@ -109,7 +110,10 @@ test('API: task creates one delivery-backed run plus one compact system message'
     const seat = store.createSeat({ roomId: room.id, nodeId: node.id, alias: 'mac-codex', provider: 'codex', sessionRef: 's1' });
 
     const created = await api(`/api/rooms/${room.id}/tasks`, {
-      method: 'POST', body: JSON.stringify({ executorSeatId: seat.id, title: 'Check cursor', instructions: 'Persist before ack.' }),
+      method: 'POST', body: JSON.stringify({
+        executorSeatId: seat.id, title: 'Check cursor', instructions: 'Persist before ack.',
+        request_id: crypto.randomUUID(),
+      }),
     });
     assert.equal(created.status, 201);
     const { task, run } = await created.json();
@@ -120,8 +124,28 @@ test('API: task creates one delivery-backed run plus one compact system message'
     assert.equal(listed.tasks.length, 1);
     assert.equal(listed.runs[0].id, run.id);
     const { messages } = await (await api(`/api/rooms/${room.id}/messages`)).json();
-    assert.deepEqual(messages.map((message) => [message.kind, message.body]), [['system', 'Task queued: Check cursor']]);
+    assert.match(messages[0].body, /Persist before ack\./);
+    assert.match(messages[0].body, /Task queued: Check cursor/);
     assert.equal(store.listRunEvents(run.id).length, 0);
+  });
+});
+
+test('API: run inspector returns timeline, artifacts, and durable delegation lineage', async () => {
+  await withApi(async (api, store) => {
+    const room = store.createRoom({ slug: 'inspect', title: 'Inspect' });
+    const node = store.registerNode({ name: 'inspector', tokenHash: 'hash' });
+    const from = store.createSeat({ roomId: room.id, nodeId: node.id, alias: 'from', provider: 'claude', sessionRef: 's1' });
+    const executor = store.createSeat({ roomId: room.id, nodeId: node.id, alias: 'to', provider: 'codex', sessionRef: 's2' });
+    const { run } = store.createTask({ roomId: room.id, requestedBySeatId: from.id, executorSeatId: executor.id, title: 'Inspect', instructions: 'Report.' });
+    store.appendRunEvent({ runId: run.id, eventKey: 'started', type: 'run.started' });
+    store.raw.prepare('INSERT INTO artifacts (id, run_id, kind, locator, digest, metadata_json, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)').run('artifact-1', run.id, 'report', '/tmp/report.json', null, '{}', Date.now());
+    const response = await api(`/api/runs/${run.id}`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.events.map((event) => event.type), ['run.started']);
+    assert.equal(body.artifacts[0].locator, '/tmp/report.json');
+    assert.equal(body.lineage.delegated_from_seat_id, from.id);
+    assert.equal(body.lineage.executor_seat_id, executor.id);
   });
 });
 
@@ -137,12 +161,14 @@ test('API: post a message with a mention, and page the transcript', async () => 
 
     const posted = await api(`/api/rooms/${room.id}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ actorId: 'adrian', body: 'run the tests', mentionSeatIds: [seat.id] }),
+      body: JSON.stringify({
+        request_id: crypto.randomUUID(), actorId: 'adrian', body: 'run the tests', mentioned_seat_ids: [seat.id],
+      }),
     });
     assert.equal(posted.status, 201);
-    const result = await posted.json();
-    assert.equal(result.message.seq, 1);
-    assert.equal(result.deliveries.length, 1, 'the mentioned seat gets exactly one delivery');
+    const { message } = await posted.json();
+    assert.equal(message.seq, 1);
+    assert.deepEqual(message.mentioned_seat_ids, [seat.id]);
 
     const page = await (await api(`/api/rooms/${room.id}/messages?limit=10`)).json();
     assert.deepEqual(page.messages.map((m) => m.body), ['run the tests']);

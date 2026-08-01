@@ -13,6 +13,13 @@ import { attachWebSocket } from './ws.mjs';
 import { log } from './log.mjs';
 import { encodeFrame, decodeFrame, HubFrame, NodeFrame } from './wire.mjs';
 import {
+  toRoom, toSeat, toMessage, toApproval, toTask, toRun, toRunEvent,
+  normalizePostMessage, normalizeCreateSeat, normalizeCreateHandoff,
+  normalizeResolveApproval, normalizeCreateTask,
+} from './dto.mjs';
+import { publishOperatorEvent } from './operator-events.mjs';
+import { OPERATOR_ACTOR, payloadSha256 } from './payload.mjs';
+import {
   SESSION_COOKIE, hashSecretBytes, tokenMatches, randomToken,
   sessionCookie, clearSessionCookie, sessionFromHeaders, originAllowed,
 } from './auth.mjs';
@@ -47,6 +54,7 @@ const STORE_ERROR_STATUS = {
   request_id_reused: 409,
   approval_exists: 409,
   already_resolved: 409,
+  invalid_delivery_transition: 409,
   unknown_room_or_node: 404,
   unknown_or_archived_room: 404,
   unknown_seat: 404,
@@ -76,7 +84,7 @@ const ROUTES = [
   ['GET', '/api/rooms/:room_id'], ['PATCH', '/api/rooms/:room_id'],
   ['GET', '/api/rooms/:room_id/messages'], ['POST', '/api/rooms/:room_id/messages'],
   ['GET', '/api/rooms/:room_id/tasks'], ['POST', '/api/rooms/:room_id/tasks'],
-  ['GET', '/api/rooms/:room_id/runs'], ['GET', '/api/runs/:run_id/events'],
+  ['GET', '/api/rooms/:room_id/runs'], ['GET', '/api/runs/:run_id'], ['GET', '/api/runs/:run_id/events'],
   ['GET', '/api/rooms/:room_id/seats'], ['POST', '/api/rooms/:room_id/seats'],
   ['DELETE', '/api/rooms/:room_id/seats/:seat_id'],
   ['POST', '/api/rooms/:room_id/handoffs'],
@@ -195,6 +203,29 @@ export function createHub({
   });
   const sessions = new Map(); // token -> expiresAtMs
   const nodeConnections = new Set();
+  const browserConnections = new Set();
+
+  const mapMessage = (row, roomId = row.room_id) => {
+    const ctx = store.messageViewContext(roomId);
+    return toMessage(row, {
+      ...ctx,
+      mentionedSeatIds: store.mentionsFor(row.id),
+      deliveryStateByMessageId: new Map(
+        store.deliveryStateForMessage(row.id)
+          ? [[row.id, store.deliveryStateForMessage(row.id)]]
+          : [],
+      ),
+    });
+  };
+
+  const publish = (type, payload) => publishOperatorEvent(store, browserConnections, { type, payload });
+
+  const operatorDedupe = (requestId, body, produce) => {
+    const id = requestId ?? crypto.randomUUID();
+    const hash = payloadSha256(body);
+    const { replayed, response } = store.dedupe(OPERATOR_ACTOR, id, hash, produce);
+    return { replayed, response };
+  };
 
   const authed = async (req) => {
     // Access first: if Cloudflare already vouched for this request there is nothing to log into.
@@ -283,66 +314,149 @@ export function createHub({
 
       switch (route.pattern) {
         case '/api/rooms': {
-          if (req.method === 'GET') { send(res, 200, { rooms: store.listRooms() }); return; }
+          if (req.method === 'GET') {
+            send(res, 200, { rooms: store.listRooms().map(toRoom) });
+            return;
+          }
           const body = await readBody(req);
-          send(res, 201, { room: store.createRoom(body) });
+          const { response } = operatorDedupe(body.request_id, body, () => {
+            const room = store.createRoom(body);
+            return { room: toRoom(room) };
+          });
+          send(res, 201, response);
           return;
         }
         case '/api/rooms/:room_id': {
           const room = store.getRoom(roomId);
           if (!room) { send(res, 404, { error: 'unknown_room' }); return; }
-          // Archive. `store.archiveRoom` existed and the PWA's X button has always called PATCH
-          // here, but the route was never registered — so every archive attempt 404'd and rooms
-          // could be created and never removed. Found with a stray blank-slug room stuck in the
-          // sidebar and three 404s behind it in the request log.
           if (req.method === 'PATCH') {
             const body = await readBody(req);
             if (body?.archived !== true) { send(res, 400, { error: 'unsupported_patch' }); return; }
-            // archiveRoom returns a boolean, not the row — re-read so the client gets a Room.
-            store.archiveRoom(roomId);
-            send(res, 200, { room: store.getRoom(roomId) });
+            const { response, replayed } = operatorDedupe(body.request_id, body, () => {
+              store.archiveRoom(roomId);
+              return { room: toRoom(store.getRoom(roomId)) };
+            });
+            if (!replayed) publish('room.archived', response);
+            send(res, 200, response);
             return;
           }
-          send(res, 200, { room, seats: store.listSeats(roomId) });
+          send(res, 200, { room: toRoom(room), seats: store.listSeats(roomId).map(toSeat) });
           return;
         }
         case '/api/rooms/:room_id/messages': {
           if (req.method === 'GET') {
             const afterSeq = Number(url.searchParams.get('after_seq') ?? 0) || 0;
+            const beforeSeqRaw = url.searchParams.get('before_seq');
+            const beforeSeq = beforeSeqRaw != null ? Number(beforeSeqRaw) || undefined : undefined;
             const limit = Number(url.searchParams.get('limit') ?? 50) || 50;
-            send(res, 200, { messages: store.listMessages(roomId, { afterSeq, limit }) });
+            const rows = store.listMessages(roomId, { afterSeq, beforeSeq, limit });
+            const ctx = store.messageViewContext(roomId);
+            const messages = rows.map((row) => toMessage(row, {
+              ...ctx,
+              mentionedSeatIds: store.mentionsFor(row.id),
+              deliveryStateByMessageId: new Map(
+                store.deliveryStateForMessage(row.id)
+                  ? [[row.id, store.deliveryStateForMessage(row.id)]]
+                  : [],
+              ),
+            }));
+            send(res, 200, { messages });
             return;
           }
           const body = await readBody(req);
-          const result = store.postMessage({ ...body, roomId });
-          send(res, 201, result);
+          const normalized = normalizePostMessage(body);
+          const { response, replayed } = operatorDedupe(normalized.request_id, normalized, () => {
+            const result = store.postMessage({
+              roomId,
+              actorId: normalized.actorId,
+              kind: normalized.kind,
+              body: normalized.body,
+              replyTo: normalized.reply_to,
+              mentionSeatIds: normalized.mentionSeatIds,
+            });
+            const message = mapMessage(result.message);
+            for (const d of result.deliveries) {
+              publish('delivery.state', {
+                room_id: roomId,
+                message_id: result.message.id,
+                delivery_id: d.id,
+                state: 'queued',
+              });
+            }
+            return { message };
+          });
+          if (!replayed) publish('message.posted', response.message);
+          send(res, 201, response);
           return;
         }
         case '/api/rooms/:room_id/tasks': {
           if (req.method === 'GET') {
-            send(res, 200, { tasks: store.listTasks(roomId), runs: store.listRuns(roomId) });
+            send(res, 200, {
+              tasks: store.listTasks(roomId).map(toTask),
+              runs: store.listRuns(roomId).map(toRun),
+            });
             return;
           }
           const body = await readBody(req);
-          const created = store.createTask({ ...body, roomId });
-          api.flushDeliveries();
-          send(res, 201, created);
+          const normalized = normalizeCreateTask(body);
+          const { response, replayed } = operatorDedupe(normalized.request_id, normalized, () => {
+            const created = store.createTask({ ...normalized, roomId });
+            const delivery = store.getDelivery(created.delivery.id);
+            const row = store.raw.prepare('SELECT * FROM messages WHERE id = ?').get(delivery.message_id);
+            return {
+              task: toTask(created.task),
+              run: toRun(created.run),
+              _message: mapMessage(row),
+              _delivery_id: created.delivery.id,
+            };
+          });
+          if (!replayed) {
+            publish('message.posted', response._message);
+            publish('delivery.state', {
+              room_id: roomId,
+              message_id: response._message.id,
+              delivery_id: response._delivery_id,
+              state: 'queued',
+            });
+            api.flushDeliveries();
+          }
+          send(res, 201, { task: response.task, run: response.run });
           return;
         }
         case '/api/rooms/:room_id/runs': {
-          send(res, 200, { runs: store.listRuns(roomId) });
+          send(res, 200, { runs: store.listRuns(roomId).map(toRun) });
+          return;
+        }
+        case '/api/runs/:run_id': {
+          const run = store.getRun(route.params.run_id);
+          if (!run) { send(res, 404, { error: 'unknown_run' }); return; }
+          const task = store.getTask(run.task_id);
+          send(res, 200, {
+            run: toRun(run),
+            events: store.listRunEvents(run.id).map(toRunEvent),
+            artifacts: store.listRunArtifacts(run.id),
+            lineage: {
+              task_id: run.task_id,
+              delegated_from_seat_id: task?.requested_by_seat_id ?? null,
+              executor_seat_id: run.executor_seat_id,
+            },
+          });
           return;
         }
         case '/api/runs/:run_id/events': {
           const run = store.getRun(route.params.run_id);
           if (!run) { send(res, 404, { error: 'unknown_run' }); return; }
-          send(res, 200, { events: store.listRunEvents(run.id) });
+          send(res, 200, { events: store.listRunEvents(run.id).map(toRunEvent) });
           return;
         }
         case '/api/rooms/:room_id/seats': {
-          if (req.method === 'GET') { send(res, 200, { seats: store.listSeats(roomId) }); return; }
+          if (req.method === 'GET') { send(res, 200, { seats: store.listSeats(roomId).map(toSeat) }); return; }
           const body = await readBody(req);
-          send(res, 201, { seat: store.createSeat({ ...body, roomId }) });
+          const normalized = normalizeCreateSeat({ ...body, roomId });
+          const { response } = operatorDedupe(normalized.request_id, normalized, () => ({
+            seat: toSeat(store.createSeat(normalized)),
+          }));
+          send(res, 201, response);
           return;
         }
         case '/api/rooms/:room_id/seats/:seat_id': {
@@ -353,21 +467,41 @@ export function createHub({
         }
         case '/api/rooms/:room_id/handoffs': {
           const body = await readBody(req);
-          send(res, 201, store.createHandoff({ ...body, roomId }));
+          const normalized = normalizeCreateHandoff(body);
+          const { response, replayed } = operatorDedupe(normalized.request_id, normalized, () => {
+            const result = store.createHandoff({ ...normalized, roomId });
+            return { message: mapMessage(result.message) };
+          });
+          if (!replayed) {
+            publish('message.posted', response.message);
+            api.flushDeliveries();
+          }
+          send(res, 201, response);
           return;
         }
         case '/api/approvals/:approval_id/resolve': {
           const body = await readBody(req);
-          const approval = store.resolveApproval(route.params.approval_id, body?.resolution);
-          // Cancellation contract §3: an answer that arrived after the delivery was canceled is
-          // recorded but never acted on, so the node is not told about it.
-          if (!approval.after_cancel) {
-            const delivery = store.getDelivery(approval.delivery_id);
+          const decision = normalizeResolveApproval(body);
+          const { response, replayed } = operatorDedupe(
+            body.request_id,
+            { approval_id: route.params.approval_id, decision },
+            () => {
+              const raw = store.resolveApproval(route.params.approval_id, decision);
+              return {
+                approval: toApproval(raw),
+                after_cancel: raw.after_cancel,
+                delivery_id: raw.delivery_id,
+              };
+            },
+          );
+          if (!response.after_cancel) {
+            const delivery = store.getDelivery(response.delivery_id);
             dispatch(delivery, HubFrame.APPROVAL_RESOLVE, {
-              approval_resolve: { approval_id: approval.id, decision: approval.resolution },
+              approval_resolve: { approval_id: response.approval.id, decision: response.approval.resolution },
             });
           }
-          send(res, 200, { approval });
+          if (!replayed) publish('approval.resolved', response.approval);
+          send(res, 200, { approval: response.approval });
           return;
         }
         // Cancellation contract §2: a delivery the node has already taken needs a real interrupt
@@ -436,24 +570,28 @@ export function createHub({
     const isNode = path === '/node/connect';
 
     if (!isNode) {
-      // The browser stream has no handshake — it just names where it left off.
-      conn.meta = { isNode: false, nodeId: null, cursor: Number(url.searchParams.get('cursor') ?? 0) || 0 };
-      nodeConnections.add(conn);
-      // Keepalive. The hub only pushes when something actually happens, so a quiet room leaves
-      // this socket idle — and Cloudflare closes an idle WebSocket at around 100 seconds. The
-      // browser then showed "Offline" permanently, because the client had no reconnect either.
-      // A comment frame well inside that window keeps the connection non-idle. Cleared on close
-      // so a dropped socket does not leak a timer per reconnect.
-      const keepalive = setInterval(() => {
-        try { conn.send(JSON.stringify(encodeFrame('ping', { ts: Date.now() }))); }
-        catch { clearInterval(keepalive); }
-      }, 30000);
-      keepalive.unref?.();
-      conn.on('close', () => { clearInterval(keepalive); nodeConnections.delete(conn); });
-      for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId: null })) {
-        conn.send(JSON.stringify(encodeFrame(evt.type, evt.payload, { cursor: evt.cursor })));
-        conn.meta.cursor = evt.cursor;
-      }
+      void (async () => {
+        if (!originAllowed(req.headers.origin, allowedOrigins)) {
+          conn.close(1008, 'origin not allowed');
+          return;
+        }
+        if (!(await authed(req))) {
+          conn.close(1008, 'unauthenticated');
+          return;
+        }
+        conn.meta = { isNode: false, nodeId: null, cursor: Number(url.searchParams.get('cursor') ?? 0) || 0 };
+        browserConnections.add(conn);
+        const keepalive = setInterval(() => {
+          try { conn.send(JSON.stringify(encodeFrame('ping', { ts: Date.now() }))); }
+          catch { clearInterval(keepalive); }
+        }, 30000);
+        keepalive.unref?.();
+        conn.on('close', () => { clearInterval(keepalive); browserConnections.delete(conn); });
+        for (const evt of store.eventsAfter(conn.meta.cursor, { audience: 'operator' })) {
+          conn.send(JSON.stringify({ type: evt.type, payload: evt.payload, cursor: evt.cursor }));
+          conn.meta.cursor = evt.cursor;
+        }
+      })();
       return;
     }
 
@@ -542,7 +680,7 @@ export function createHub({
         // finished work on every reconnect. Observed live: one message produced a duplicate reply
         // and a run of "no active turn to steer" errors. Terminal deliveries are skipped here, so
         // replay carries only work that is genuinely still outstanding.
-        for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId })) {
+        for (const evt of store.eventsAfter(conn.meta.cursor, { nodeId, audience: 'node' })) {
           if (evt.type === HubFrame.DELIVERY_ASSIGN) {
             const id = evt.payload?.delivery_assign?.delivery?.id;
             const current = id ? store.getDelivery(id) : null;
@@ -588,55 +726,74 @@ export function createHub({
         handleNodeHandoffCreate(conn, frame.payload?.handoff_create);
         return;
       }
+      if (frame.type === NodeFrame.RUN_CREATE) {
+        handleNodeRunCreate(conn, frame.payload?.run_create);
+        return;
+      }
       if (frame.type === NodeFrame.QUERY) {
         handleNodeQuery(conn, frame.payload?.query_request);
       }
     });
   });
 
+  /** Hub-commit ack for a node outbox mutation (Citadel 6.7). */
+  function sendMutationResult(conn, { requestId, status, entityId = null, error = null }) {
+    if (!requestId || !conn) return;
+    conn.send(JSON.stringify(encodeFrame(HubFrame.MUTATION_RESULT, {
+      mutation_result: {
+        request_id: requestId,
+        status,
+        entity_id: entityId,
+        commit_cursor: store.latestCursor(),
+        error,
+      },
+    })));
+  }
+
   /**
    * A seat handing off to another seat in the same room.
    *
-   * `node.handoff.create` was in the wire vocabulary and the node has always sent it, but nothing
-   * here consumed it: the frame decoded, matched no branch, and was dropped. The node resolves its
-   * caller as soon as the frame is written (same fire-and-forget contract as `message.post`), so
-   * the agent was told the handoff succeeded and no handoff row was ever written. Found by reading
-   * the production database after a live handoff reported success.
-   *
-   * Deliberately still fire-and-forget — matching `message.post` rather than inventing an ack for
-   * one frame — but failures are logged loudly instead of vanishing.
+   * Citadel 6.7: commits then acks via `mutation.result` so the node outbox can clear.
    */
   function handleNodeHandoffCreate(conn, payload) {
     const {
-      from_seat_id: fromSeatId, to_seat_id: toSeatId, body, evidence_refs: evidenceRefs,
+      request_id: requestId = null, from_seat_id: fromSeatId, to_seat_id: toSeatId, body,
+      evidence_refs: evidenceRefs,
     } = payload ?? {};
     if (!fromSeatId || !toSeatId || typeof body !== 'string') {
       log.warn('node.handoff.create.malformed', { reason: 'missing seat ids or body' });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'malformed' });
       return;
     }
     const from = store.getSeat(fromSeatId);
-    if (!from) { log.warn('node.handoff.create.unknown_seat', { seat_id: fromSeatId }); return; }
+    if (!from) {
+      log.warn('node.handoff.create.unknown_seat', { seat_id: fromSeatId });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'unknown_seat' });
+      return;
+    }
     // Same boundary as every other node-authored action: a node may only act as its own seats.
     if (from.node_id !== conn.meta?.nodeId) {
       log.warn('node.handoff.create.forbidden', { seat_id: fromSeatId });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'forbidden' });
       return;
     }
     try {
-      const { handoff } = store.createHandoff({
+      const { handoff, message } = store.createHandoff({
         roomId: from.room_id,
         fromSeatId,
         toSeatId,
         summary: body,
         evidence: { refs: Array.isArray(evidenceRefs) ? evidenceRefs : [] },
       });
+      publish('message.posted', mapMessage(message));
       log.info('handoff.created', {
         handoff_id: handoff.id, from_seat_id: fromSeatId, to_seat_id: toSeatId,
       });
-      // The handoff queues a delivery for the target seat; flush so it wakes now rather than on
-      // the next dispatch tick.
       api.flushDeliveries();
+      if (requestId) sendMutationResult(conn, { requestId, status: 'committed', entityId: handoff.id });
     } catch (err) {
       log.error('node.handoff.create.failed', { err: String(err), from_seat_id: fromSeatId });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: String(err.message ?? err) });
     }
   }
 
@@ -704,12 +861,11 @@ export function createHub({
   }
 
   /**
-   * A seat (Codex/Claude, via its node) posting its reply back into the room.
+   * A seat posting its reply back into the room.
    *
-   * The Rust node's ClientCommand::PostMessage does not wait for an ack from this frame — it
-   * resolves its own caller as soon as the frame is written to the socket, relying entirely on
-   * (seat_id, request_id) dedupe for safety across a reconnect-and-retry. There is deliberately no
-   * response frame sent back for this message type; match that contract rather than inventing one.
+   * Citadel 6.7: after the store commit (or idempotent replay), the hub always emits
+   * `mutation.result` so the node can clear its durable outbox. Callers must not treat the
+   * socket write alone as success.
    */
   function handleNodeMessagePost(conn, payload) {
     const {
@@ -718,80 +874,186 @@ export function createHub({
     } = payload ?? {};
     if (!requestId || !seatId || !roomId || typeof body !== 'string') {
       log.warn('node.message.post.malformed', { reason: 'missing seat_id or room_id' });
+      sendMutationResult(conn, { requestId, status: 'rejected', error: 'malformed' });
       return;
     }
     const seat = store.getSeat(seatId);
     if (!seat || seat.room_id !== roomId || seat.node_id !== conn.meta?.nodeId) {
       log.warn('node.message.post.unknown_seat', { seat_id: seatId, room_id: roomId });
+      sendMutationResult(conn, { requestId, status: 'rejected', error: 'unknown_seat' });
       return;
     }
     try {
-      store.dedupe(seatId, requestId, sha ?? '', () => store.postMessage({
+      const result = store.dedupe(seatId, requestId, sha ?? '', () => store.postMessage({
         roomId, actorId: seatId, actorKind: 'agent', kind, body, replyTo,
       }));
+      if (!result.replayed) publish('message.posted', mapMessage(result.response.message));
+      sendMutationResult(conn, {
+        requestId,
+        status: result.replayed ? 'replayed' : 'committed',
+        entityId: result.response.message.id,
+      });
     } catch (e) {
       log.error('node.message.post.failed', { seat_id: seatId, room_id: roomId, err: e });
+      sendMutationResult(conn, { requestId, status: 'rejected', error: String(e.message ?? e) });
     }
   }
 
   function handleNodeDeliveryState(conn, payload) {
-    const { delivery_id: deliveryId, state, error_code: errorCode = null } = payload ?? {};
+    const {
+      request_id: requestId = null, delivery_id: deliveryId, state, error_code: errorCode = null,
+    } = payload ?? {};
     const states = new Set(['queued', 'sent', 'acked', 'running', 'waiting_approval', 'completed', 'failed', 'dead_letter']);
     if (!deliveryId || !states.has(state)) {
       log.warn('node.delivery.state.malformed');
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'malformed' });
       return;
     }
     const delivery = store.setDeliveryStateForNode({ nodeId: conn.meta?.nodeId, deliveryId, state, errorCode });
-    if (!delivery) log.warn('node.delivery.state.forbidden', { delivery_id: deliveryId });
+    if (!delivery) {
+      log.warn('node.delivery.state.forbidden', { delivery_id: deliveryId });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'forbidden' });
+      return;
+    }
+    const messageId = delivery.message_id;
+    publish('delivery.state', {
+      room_id: delivery.room_id,
+      message_id: messageId,
+      delivery_id: deliveryId,
+      state,
+    });
+    if (requestId) sendMutationResult(conn, { requestId, status: 'committed', entityId: deliveryId });
   }
 
   function handleNodeRunEvent(conn, payload) {
-    const { delivery_id: deliveryId, event_key: eventKey, event_type: type, payload: eventPayload = {} } = payload ?? {};
+    const {
+      request_id: requestId = null, delivery_id: deliveryId, event_key: eventKey,
+      event_type: type, payload: eventPayload = {},
+    } = payload ?? {};
     const delivery = store.getDelivery(deliveryId);
     if (!delivery || delivery.node_id !== conn.meta?.nodeId) {
       log.warn('node.run.event.forbidden', { delivery_id: deliveryId });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'forbidden' });
       return;
     }
     const run = store.getRunByDelivery(deliveryId);
-    if (!run || !eventKey || !type) return;
+    if (!run || !eventKey || !type) {
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'unknown_run' });
+      return;
+    }
     try {
-      store.appendRunEvent({ runId: run.id, eventKey, type, payload: eventPayload });
+      const event = store.appendRunEvent({ runId: run.id, eventKey, type, payload: eventPayload });
+      if (requestId) {
+        sendMutationResult(conn, {
+          requestId,
+          status: event.replayed ? 'replayed' : 'committed',
+          entityId: event.id,
+        });
+      }
     } catch (err) {
       log.error('node.run.event.failed', { err: String(err), run_id: run.id });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: String(err.message ?? err) });
     }
   }
 
   function handleNodeApprovalRequest(conn, payload) {
     const {
-      seat_id: seatId, delivery_id: deliveryId, provider_request_id: providerRequestId,
-      description, input_preview: inputPreview = '', decisions,
+      request_id: requestId = null, seat_id: seatId, delivery_id: deliveryId,
+      provider_request_id: providerRequestId, description, input_preview: inputPreview = '', decisions,
     } = payload ?? {};
     const seat = store.getSeat(seatId);
     const delivery = store.getDelivery(deliveryId);
     if (!seat || !delivery || seat.node_id !== conn.meta?.nodeId || delivery.seat_id !== seatId || delivery.node_id !== conn.meta?.nodeId) {
       log.warn('node.approval.request.forbidden', { seat_id: seatId, delivery_id: deliveryId });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'forbidden' });
       return;
     }
     try {
-      store.createApproval({
+      const approval = store.createApproval({
         roomId: seat.room_id, seatId, deliveryId, providerRequestId,
         description, inputPreview, decisions,
       });
+      publish('approval.requested', toApproval(approval));
+      if (requestId) sendMutationResult(conn, { requestId, status: 'committed', entityId: approval.id });
     } catch (err) {
-      if (err.message !== 'approval_exists') log.error('node.approval.request.failed', { err: String(err) });
+      if (err.message === 'approval_exists') {
+        if (requestId) sendMutationResult(conn, { requestId, status: 'replayed', entityId: null });
+        return;
+      }
+      log.error('node.approval.request.failed', { err: String(err) });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: String(err.message ?? err) });
+    }
+  }
+
+  /**
+   * Agent-authored durable task + run (Citadel 6.4 / P1 item 11).
+   * Same store path as the operator HTTP POST /api/rooms/:id/tasks.
+   */
+  function handleNodeRunCreate(conn, payload) {
+    const {
+      request_id: requestId, room_id: roomId, from_seat_id: fromSeatId,
+      executor_seat_id: executorSeatId, title, instructions,
+    } = payload ?? {};
+    if (!requestId || !roomId || !fromSeatId || !executorSeatId || typeof title !== 'string' || typeof instructions !== 'string') {
+      log.warn('node.run.create.malformed');
+      sendMutationResult(conn, { requestId, status: 'rejected', error: 'malformed' });
+      return;
+    }
+    const from = store.getSeat(fromSeatId);
+    if (!from || from.room_id !== roomId || from.node_id !== conn.meta?.nodeId) {
+      sendMutationResult(conn, { requestId, status: 'rejected', error: 'forbidden' });
+      return;
+    }
+    try {
+      const created = store.createTask({
+        roomId,
+        requestedBySeatId: fromSeatId,
+        executorSeatId,
+        title,
+        instructions,
+      });
+      const delivery = store.getDelivery(created.delivery.id);
+      const row = store.raw.prepare('SELECT * FROM messages WHERE id = ?').get(delivery.message_id);
+      publish('message.posted', mapMessage(row));
+      publish('delivery.state', {
+        room_id: roomId,
+        message_id: row.id,
+        delivery_id: created.delivery.id,
+        state: 'queued',
+      });
+      api.flushDeliveries();
+      sendMutationResult(conn, {
+        requestId,
+        status: 'committed',
+        entityId: created.run.id,
+      });
+      log.info('run.created', {
+        run_id: created.run.id, task_id: created.task.id, from_seat_id: fromSeatId, executor_seat_id: executorSeatId,
+      });
+    } catch (err) {
+      log.error('node.run.create.failed', { err: String(err) });
+      sendMutationResult(conn, { requestId, status: 'rejected', error: String(err.message ?? err) });
     }
   }
 
   function handleNodeSeatPresence(conn, payload) {
-    const { seat_id: seatId, state, last_ack_seq: lastAckSeq } = payload ?? {};
+    const {
+      request_id: requestId = null, seat_id: seatId, state, last_ack_seq: lastAckSeq,
+    } = payload ?? {};
     const states = new Set(['detached', 'offline', 'idle', 'running', 'waiting_approval', 'error']);
     if (!seatId || !states.has(state) || !Number.isInteger(lastAckSeq)) {
       log.warn('node.seat.presence.malformed');
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'malformed' });
       return;
     }
-    if (!store.updateSeatPresence({ nodeId: conn.meta?.nodeId, seatId, state, lastAckSeq })) {
+    const updated = store.updateSeatPresence({ nodeId: conn.meta?.nodeId, seatId, state, lastAckSeq });
+    if (!updated) {
       log.warn('node.seat.presence.forbidden', { seat_id: seatId });
+      if (requestId) sendMutationResult(conn, { requestId, status: 'rejected', error: 'forbidden' });
+      return;
     }
+    publish('seat.presence', toSeat(updated));
+    if (requestId) sendMutationResult(conn, { requestId, status: 'committed', entityId: seatId });
   }
 
   /**
@@ -799,14 +1061,9 @@ export function createHub({
    * Returns true if a live connection took it; false means it stays queued for replay.
    */
   function dispatch(delivery, frameType, payload) {
-    // payload is sent to the node VERBATIM — no cursor is spliced in. roundtable-node's
-    // HubEvent is an externally-tagged enum (one top-level key: the variant name, e.g.
-    // "delivery_assign"); adding a sibling "cursor" key there would break its own
-    // serde_json::from_value deserialization, not just be ignored. Confirmed the node does not
-    // even read a per-event cursor field: its only cursor advance in this path
-    // (`s.mark_event_acked(Uuid::now_v7(), accepted.resume_cursor)`) reuses the handshake's
-    // resume_cursor, not anything from this payload. `conn.meta.cursor` below is purely the
-    // HUB's own bookkeeping for what to replay on a future reconnect.
+    // payload is sent to the node VERBATIM — no extra fields spliced into the HubEvent enum
+    // body. The envelope carries `cursor` + `event_id` at the top level; the node persists those
+    // into its durable inbox and advances contiguous_cursor only after apply (Citadel 6.8).
     const evt = store.appendEvent({
       targetNodeId: delivery?.node_id ?? null, type: frameType, payload,
     });
@@ -826,6 +1083,7 @@ export function createHub({
     // Exposed for tests and for the eventual delivery loop.
     get sessionCount() { return sessions.size; },
     get connectionCount() { return nodeConnections.size; },
+    get browserConnectionCount() { return browserConnections.size; },
     store,
     dispatch,
     /** Push every queued delivery whose node is connected. Returns how many were taken. */
@@ -922,6 +1180,7 @@ export function createHub({
       }
       allConnections.clear();
       nodeConnections.clear();
+      browserConnections.clear();
       server.close(resolve);
       server.closeAllConnections();
     }),

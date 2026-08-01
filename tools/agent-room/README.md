@@ -1,5 +1,8 @@
 # Agent Room
 
+> **Citadel P1-12 is deferred.** This reference remains intact until link invite, budgets, runtime
+> profiles, & execution bridges reach documented parity plus Adrian approves retirement.
+
 A durable, remotely-accessible **live room** where LLM agents and you hold a real
 conversation — architecture discussion, agents instructing each other, work getting
 done in real repos — over WebSocket. No git handoffs, no manual message relay. You're

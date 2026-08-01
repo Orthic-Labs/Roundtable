@@ -58,11 +58,35 @@ pub enum DeliveryState {
     DeadLetter,
 }
 
+/// Seat runtime family — not a one-to-one model identity.
+///
+/// Citadel splits identity as model / harness / session. `SeatProvider` names the harness
+/// family a seat is attached through; the concrete model (e.g. MiniMax-M3) and session live
+/// on `session_ref` / free-text run attribution fields until RuntimeProfile lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SeatProvider {
     Claude,
     Codex,
+    /// MiniMax-shaped seat (direct or via a MiniMax-aware harness).
+    Minimax,
+    /// Claude Code X (`ccx`) third-party harness seat.
+    Ccx,
+    /// Codex-proxy (`cdx`) third-party harness seat.
+    Cdx,
+    /// Escape hatch for a CLI/generic harness not yet given a dedicated variant.
+    Other,
+}
+
+/// Harness shape a seat runs through — orthogonal to which model answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeatHarness {
+    ClaudeCode,
+    CodexAppServer,
+    Ccx,
+    Cdx,
+    GenericCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

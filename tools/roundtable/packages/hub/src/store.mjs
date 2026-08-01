@@ -15,6 +15,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { hashSecretBytes, tokenMatches } from './auth.mjs';
+import { OPERATOR_TARGET } from './dto.mjs';
+import { assertDeliveryTransition, canTransitionDelivery } from './transitions.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const MIGRATION_PATH = resolve(
@@ -339,12 +341,66 @@ export class Store {
     }
   }
 
-  /** Page a room's transcript. `afterSeq` is exclusive; results ascend by seq. */
-  listMessages(roomId, { afterSeq = 0, limit = 50 } = {}) {
+  /** Page a room's transcript. `afterSeq` is exclusive; `beforeSeq` is exclusive upper bound. */
+  listMessages(roomId, { afterSeq = 0, beforeSeq = null, limit = 50 } = {}) {
     const capped = Math.min(Math.max(1, limit), 200);
+    if (beforeSeq != null) {
+      return this.#db
+        .prepare('SELECT * FROM messages WHERE room_id = ? AND seq > ? AND seq < ? ORDER BY seq ASC LIMIT ?')
+        .all(roomId, afterSeq, beforeSeq, capped);
+    }
     return this.#db
       .prepare('SELECT * FROM messages WHERE room_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?')
       .all(roomId, afterSeq, capped);
+  }
+
+  /** Delivery state for the first delivery tied to a message, if any. */
+  deliveryStateForMessage(messageId) {
+    const row = this.#db
+      .prepare('SELECT state FROM deliveries WHERE message_id = ? ORDER BY created_at_ms ASC LIMIT 1')
+      .get(messageId);
+    return row?.state ?? null;
+  }
+
+  /** Handoff metadata keyed by handoff message id, with seat aliases resolved. */
+  handoffForMessage(messageId) {
+    const row = this.#db.prepare(
+      `SELECT h.*, fs.alias AS from_alias, ts.alias AS to_alias
+         FROM handoffs h
+         JOIN seats fs ON fs.id = h.from_seat_id
+         JOIN seats ts ON ts.id = h.to_seat_id
+        WHERE h.message_id = ?`,
+    ).get(messageId);
+    if (!row) return null;
+    let evidence_refs = [];
+    try {
+      const parsed = JSON.parse(row.evidence_json);
+      if (Array.isArray(parsed?.refs)) evidence_refs = parsed.refs;
+      else if (parsed && typeof parsed === 'object') {
+        evidence_refs = Object.entries(parsed).map(([kind, value]) => ({ kind, value: String(value) }));
+      }
+    } catch { /* empty evidence is valid */ }
+    return { from_alias: row.from_alias, to_alias: row.to_alias, evidence_refs };
+  }
+
+  messageViewContext(roomId) {
+    const seats = this.listSeats(roomId);
+    const seatById = new Map(seats.map((s) => [s.id, s]));
+    const handoffRows = this.#db.prepare('SELECT message_id FROM handoffs WHERE room_id = ?').all(roomId);
+    const handoffByMessageId = new Map(
+      handoffRows.map((r) => [r.message_id, this.handoffForMessage(r.message_id)]),
+    );
+    return { seatById, handoffByMessageId };
+  }
+
+  enrichMessage(row, ctx = this.messageViewContext(row.room_id)) {
+    const deliveryState = this.deliveryStateForMessage(row.id);
+    return {
+      row,
+      mentionedSeatIds: this.mentionsFor(row.id),
+      deliveryStateByMessageId: deliveryState ? new Map([[row.id, deliveryState]]) : new Map(),
+      ...ctx,
+    };
   }
 
   /**
@@ -389,9 +445,11 @@ export class Store {
     return this.#db.prepare('SELECT seat_id FROM message_mentions WHERE message_id = ?').all(messageId).map((r) => r.seat_id);
   }
 
-  /** Mark a delivery acknowledged. Returns false if it is unknown or already past queued/sent. */
+  /** Marks a delivery acknowledged. Returns false if it is unknown or already past queued/sent. */
   ackDelivery(deliveryId) {
     if (!deliveryId) return false;
+    const current = this.getDelivery(deliveryId);
+    if (!current || !canTransitionDelivery(current.state, 'acked')) return false;
     return this.#db
       .prepare("UPDATE deliveries SET state = 'acked', updated_at_ms = ? WHERE id = ? AND state IN ('queued','sent')")
       .run(Date.now(), deliveryId).changes > 0;
@@ -463,12 +521,14 @@ export class Store {
       this.#db
         .prepare('INSERT INTO tasks (id, room_id, requested_by_seat_id, executor_seat_id, title, instructions, state, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(id, roomId, requestedBySeatId, executorSeatId, title, instructions, 'queued', now, now);
+      // Transcript + delivery share one message row; include the real instructions so the
+      // executor receives a WorkPacket, not just the title stub (Citadel 6.1).
       const { deliveries } = this.#postMessageLocked({
         roomId,
         actorId: requestedBySeatId ?? 'system',
         actorKind: requestedBySeatId ? 'agent' : 'system',
         kind: 'system',
-        body: `Task queued: ${title}`,
+        body: `Task queued: ${title}\n\n${instructions}`,
         mentionSeatIds: [executorSeatId],
         deliveryReason: 'human_followup',
       });
@@ -518,6 +578,12 @@ export class Store {
   listRunEvents(runId) {
     return this.#db.prepare('SELECT * FROM run_events WHERE run_id = ? ORDER BY seq ASC').all(runId)
       .map((event) => ({ ...event, payload: JSON.parse(event.payload_json) }));
+  }
+
+  /** Durable artifacts produced by a run; locator remains opaque to the operator UI. */
+  listRunArtifacts(runId) {
+    return this.#db.prepare('SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at_ms ASC').all(runId)
+      .map((artifact) => ({ ...artifact, metadata: JSON.parse(artifact.metadata_json) }));
   }
 
   // ---- approvals ---------------------------------------------------------
@@ -656,8 +722,19 @@ export class Store {
     ).get(deliveryId);
   }
 
+  /** Test/admin helper: advance a delivery through valid transitions in tests. */
+  forceDeliveryState(deliveryId, state, errorCode = null) {
+    const current = this.getDelivery(deliveryId);
+    if (!current) return null;
+    assertDeliveryTransition(current.state, state);
+    return this.setDeliveryState(deliveryId, state, errorCode);
+  }
+
   /** Marks a delivery as running/waiting_approval etc. from a node's `delivery.state` post. */
   setDeliveryState(deliveryId, state, errorCode = null) {
+    const current = this.getDelivery(deliveryId);
+    if (!current) return null;
+    assertDeliveryTransition(current.state, state);
     this.#db
       .prepare('UPDATE deliveries SET state = ?, error_code = ?, updated_at_ms = ? WHERE id = ?')
       .run(state, errorCode, Date.now(), deliveryId);
@@ -668,17 +745,22 @@ export class Store {
   setDeliveryStateForNode({ nodeId, deliveryId, state, errorCode = null }) {
     const delivery = this.getDelivery(deliveryId);
     if (!delivery || delivery.node_id !== nodeId) return null;
-    const updated = this.setDeliveryState(deliveryId, state, errorCode);
-    const run = this.getRunByDelivery(deliveryId);
-    if (run) {
-      const now = Date.now();
-      const terminal = ['completed', 'failed', 'dead_letter'].includes(state);
-      this.#db
-        .prepare('UPDATE runs SET state = ?, error_code = ?, started_at_ms = CASE WHEN ? = \'running\' AND started_at_ms IS NULL THEN ? ELSE started_at_ms END, finished_at_ms = CASE WHEN ? THEN ? ELSE finished_at_ms END WHERE id = ?')
-        .run(state, errorCode, state, now, terminal ? 1 : 0, now, run.id);
-      if (terminal) this.#db.prepare('UPDATE tasks SET state = ?, updated_at_ms = ? WHERE id = ?').run(state, now, run.task_id);
+    try {
+      const updated = this.setDeliveryState(deliveryId, state, errorCode);
+      const run = this.getRunByDelivery(deliveryId);
+      if (run) {
+        const now = Date.now();
+        const terminal = ['completed', 'failed', 'dead_letter'].includes(state);
+        this.#db
+          .prepare('UPDATE runs SET state = ?, error_code = ?, started_at_ms = CASE WHEN ? = \'running\' AND started_at_ms IS NULL THEN ? ELSE started_at_ms END, finished_at_ms = CASE WHEN ? THEN ? ELSE finished_at_ms END WHERE id = ?')
+          .run(state, errorCode, state, now, terminal ? 1 : 0, now, run.id);
+        if (terminal) this.#db.prepare('UPDATE tasks SET state = ?, updated_at_ms = ? WHERE id = ?').run(state, now, run.task_id);
+      }
+      return updated;
+    } catch (e) {
+      if (e.message === 'invalid_delivery_transition') return null;
+      throw e;
     }
-    return updated;
   }
 
   pendingApprovals(roomId) {
@@ -698,12 +780,30 @@ export class Store {
     return this.#db.prepare('SELECT * FROM events WHERE event_id = ?').get(eventId);
   }
 
-  /** Events after `cursor`, addressed to this node or broadcast. Ascending, capped. */
-  eventsAfter(cursor = 0, { nodeId = null, limit = 200 } = {}) {
+  /** Operator-visible events for the browser socket — never replayed to nodes. */
+  appendOperatorEvent({ eventId = randomUUID(), type, payload }) {
+    return this.appendEvent({ eventId, targetNodeId: OPERATOR_TARGET, type, payload });
+  }
+
+  /**
+   * Events after `cursor`.
+   * - audience `node`: node protocol replay (excludes operator-only rows)
+   * - audience `operator`: browser replay (operator rows only)
+   */
+  eventsAfter(cursor = 0, { nodeId = null, audience = 'node', limit = 200 } = {}) {
     const capped = Math.min(Math.max(1, limit), 500);
+    if (audience === 'operator') {
+      return this.#db
+        .prepare('SELECT * FROM events WHERE cursor > ? AND target_node_id = ? ORDER BY cursor ASC LIMIT ?')
+        .all(cursor, OPERATOR_TARGET, capped)
+        .map((e) => ({ ...e, payload: JSON.parse(e.payload_json) }));
+    }
     return this.#db
-      .prepare('SELECT * FROM events WHERE cursor > ? AND (target_node_id IS NULL OR target_node_id = ?) ORDER BY cursor ASC LIMIT ?')
-      .all(cursor, nodeId, capped)
+      .prepare(`SELECT * FROM events WHERE cursor > ?
+                AND (target_node_id IS NULL OR target_node_id = ?)
+                AND (target_node_id IS NULL OR target_node_id != ?)
+                ORDER BY cursor ASC LIMIT ?`)
+      .all(cursor, nodeId, OPERATOR_TARGET, capped)
       .map((e) => ({ ...e, payload: JSON.parse(e.payload_json) }));
   }
 

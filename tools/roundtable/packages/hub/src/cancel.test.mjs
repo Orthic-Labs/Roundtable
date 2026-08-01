@@ -36,7 +36,9 @@ test('§1 cancel before the provider starts fails the delivery without any inter
 
 test('§2 cancel while running signals an interrupt', () => {
   const { store, delivery } = fixture();
-  store.setDeliveryState(delivery.id, 'running');
+  store.forceDeliveryState(delivery.id, 'sent');
+  store.forceDeliveryState(delivery.id, 'acked');
+  store.forceDeliveryState(delivery.id, 'running');
   const result = store.cancelDelivery(delivery.id, { canceledBy: 'human' });
   assert.equal(result.interrupt, true, 'a running delivery must produce an interrupt');
   assert.equal(result.delivery.state, 'failed');
@@ -49,7 +51,10 @@ test('§3 cancel while waiting on approval kills the approval, and a later answe
     providerRequestId: 'rev-1', description: 'run rm -rf', inputPreview: 'rm -rf /',
     decisions: ['approve', 'deny'],
   });
-  store.setDeliveryState(delivery.id, 'waiting_approval');
+  store.forceDeliveryState(delivery.id, 'sent');
+  store.forceDeliveryState(delivery.id, 'acked');
+  store.forceDeliveryState(delivery.id, 'running');
+  store.forceDeliveryState(delivery.id, 'waiting_approval');
 
   const result = store.cancelDelivery(delivery.id, { canceledBy: 'human' });
   assert.deepEqual(result.canceledApprovals, [approval.id]);
@@ -67,7 +72,9 @@ test('§3 cancel while waiting on approval kills the approval, and a later answe
 
 test('§5 cancel does not roll back work already recorded', () => {
   const { store, room, seat, delivery } = fixture();
-  store.setDeliveryState(delivery.id, 'running');
+  store.forceDeliveryState(delivery.id, 'sent');
+  store.forceDeliveryState(delivery.id, 'acked');
+  store.forceDeliveryState(delivery.id, 'running');
   // The provider did real work and reported it before the cancel landed.
   store.postMessage({
     roomId: room.id, actorId: seat.id, actorKind: 'agent', kind: 'progress',

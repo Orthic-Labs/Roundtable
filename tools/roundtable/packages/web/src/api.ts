@@ -1,4 +1,4 @@
-import type { Approval, DiscoveredSession, Message, QueuedWrite, Room, Run, RunEvent, Seat, ServerEvent, Task } from './types';
+import type { Approval, DiscoveredSession, Message, QueuedWrite, Room, Run, RunEvent, RunInspection, Seat, ServerEvent, Task } from './types';
 
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -22,12 +22,13 @@ export const api = {
   tasks: (roomId: string) => request<{ tasks: Task[]; runs: Run[] }>(`/api/rooms/${roomId}/tasks`),
   createTask: (roomId: string, input: Pick<Task, 'executor_seat_id' | 'title' | 'instructions'>) => request<{ task: Task; run: Run }>(`/api/rooms/${roomId}/tasks`, { method: 'POST', body: JSON.stringify({ executorSeatId: input.executor_seat_id, title: input.title, instructions: input.instructions, request_id: crypto.randomUUID() }) }),
   runEvents: async (runId: string) => (await request<{ events: RunEvent[] }>(`/api/runs/${runId}/events`)).events,
-  postMessage: (roomId: string, body: string, mentioned_seat_ids: string[], request_id: string) => request<Message>(`/api/rooms/${roomId}/messages`, { method: 'POST', body: JSON.stringify({ body, mentioned_seat_ids, request_id }) }),
+  runInspector: (runId: string) => request<RunInspection>(`/api/runs/${runId}`),
+  postMessage: async (roomId: string, body: string, mentioned_seat_ids: string[], request_id: string) => (await request<{ message: Message }>(`/api/rooms/${roomId}/messages`, { method: 'POST', body: JSON.stringify({ body, mentioned_seat_ids, request_id }) })).message,
   seats: async (roomId: string) => (await request<{ seats: Seat[] }>(`/api/rooms/${roomId}/seats`)).seats,
   sessions: async () => (await request<{ nodes: DiscoveredSession[] }>('/api/nodes?include_sessions=true')).nodes ?? [],
-  attachSeat: (roomId: string, session: DiscoveredSession, alias: string) => request<Seat>(`/api/rooms/${roomId}/seats`, { method: 'POST', body: JSON.stringify({ ...session, alias, request_id: crypto.randomUUID() }) }),
+  attachSeat: async (roomId: string, session: DiscoveredSession, alias: string) => (await request<{ seat: Seat }>(`/api/rooms/${roomId}/seats`, { method: 'POST', body: JSON.stringify({ ...session, alias, request_id: crypto.randomUUID() }) })).seat,
   detachSeat: (roomId: string, seatId: string) => request<void>(`/api/rooms/${roomId}/seats/${seatId}`, { method: 'DELETE' }),
-  handoff: (roomId: string, from_seat_id: string, to_seat_id: string, summary: string, evidence_refs: unknown[], request_id: string) => request<Message>(`/api/rooms/${roomId}/handoffs`, { method: 'POST', body: JSON.stringify({ from_seat_id, to_seat_id, summary, evidence_refs, request_id }) }),
+  handoff: async (roomId: string, from_seat_id: string, to_seat_id: string, summary: string, evidence_refs: unknown[], request_id: string) => (await request<{ message: Message }>(`/api/rooms/${roomId}/handoffs`, { method: 'POST', body: JSON.stringify({ from_seat_id, to_seat_id, summary, evidence_refs, request_id }) })).message,
   resolveApproval: (id: string, decision: string, request_id: string) => request<Approval>(`/api/approvals/${id}/resolve`, { method: 'POST', body: JSON.stringify({ decision, request_id }) }),
   replay: (write: QueuedWrite) => request<unknown>(write.path, { method: 'POST', body: JSON.stringify(write.body) }),
   // Reconnects. Without this, ONE drop was permanent: onclose set offline and nothing ever dialled

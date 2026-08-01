@@ -20,9 +20,8 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use roundtable_protocol::{
-    canonical_sha256, validate_message_body, ActorKind, Delivery, DeliveryReason,
-    DeliveryState, Message, MessageKind, PROTOCOL_VERSION, Seat,
-    SeatProvider, SeatState,
+    canonical_sha256, validate_message_body, Delivery, DeliveryState, Message, MessageKind,
+    PROTOCOL_VERSION, Seat, SeatProvider, SeatState,
 };
 use crate::config::NodeConfig;
 use crate::state::NodeState;
@@ -212,6 +211,14 @@ pub enum HubEvent {
         result: Option<serde_json::Value>,
         error: Option<String>,
     },
+    /// Hub-commit ack for an outbound mutation (Citadel 6.7). Routed like QueryResult.
+    MutationResult {
+        request_id: Uuid,
+        status: String,
+        entity_id: Option<Uuid>,
+        commit_cursor: Option<i64>,
+        error: Option<String>,
+    },
     Ping { nonce: String },
 }
 
@@ -223,11 +230,15 @@ pub enum HubCommand {
     QueryRequest { request_id: Uuid, query: Value },
     DeliveryAck { delivery_id: Uuid },
     DeliveryState {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<Uuid>,
         delivery_id: Uuid,
         state: DeliveryState,
         error_code: Option<String>,
     },
     RunEvent {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<Uuid>,
         delivery_id: Uuid,
         event_key: String,
         event_type: String,
@@ -260,9 +271,20 @@ pub enum HubCommand {
         decisions: Vec<String>,
     },
     SeatPresence {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<Uuid>,
         seat_id: Uuid,
         state: SeatState,
         last_ack_seq: i64,
+    },
+    /// Agent-authored durable task + run (Citadel 6.4).
+    RunCreate {
+        request_id: Uuid,
+        room_id: Uuid,
+        from_seat_id: Uuid,
+        executor_seat_id: Uuid,
+        title: String,
+        instructions: String,
     },
     SessionCatalog {
         provider: SeatProvider,
@@ -322,17 +344,6 @@ pub enum ClientCommand {
         reply_to: Option<Uuid>,
         response: oneshot::Sender<NodeResult<Uuid>>,
     },
-    DeliveryState {
-        delivery_id: Uuid,
-        state: DeliveryState,
-        error_code: Option<String>,
-    },
-    RunEvent {
-        delivery_id: Uuid,
-        event_key: String,
-        event_type: String,
-        payload: Value,
-    },
     Handoff {
         from_seat_id: Uuid,
         to_seat_id: Uuid,
@@ -349,6 +360,28 @@ pub enum ClientCommand {
         decisions: Vec<String>,
         response: oneshot::Sender<NodeResult<Uuid>>,
     },
+    DeliveryState {
+        delivery_id: Uuid,
+        state: DeliveryState,
+        error_code: Option<String>,
+    },
+    RunEvent {
+        delivery_id: Uuid,
+        event_key: String,
+        event_type: String,
+        payload: Value,
+    },
+    /// Mark a previously accepted inbox event as locally applied (advances contiguous cursor).
+    MarkApplied { event_id: Uuid },
+    /// Agent-authored durable task/run creation. Resolves only after hub `mutation.result`.
+    RunCreate {
+        room_id: Uuid,
+        from_seat_id: Uuid,
+        executor_seat_id: Uuid,
+        title: String,
+        instructions: String,
+        response: oneshot::Sender<NodeResult<Uuid>>,
+    },
     SeatPresence {
         seat_id: Uuid,
         state: SeatState,
@@ -362,7 +395,7 @@ pub struct HubClient {
     token: String,
     state: Arc<Mutex<NodeState>>,
     command_tx: mpsc::UnboundedSender<ClientCommand>,
-    event_rx: Arc<Mutex<mpsc::UnboundedReceiver<HubEvent>>>,
+    event_rx: Arc<Mutex<mpsc::UnboundedReceiver<(HubEvent, Uuid)>>>,
     owned_seats: Arc<Mutex<Vec<Uuid>>>,
     transport_factory: Arc<dyn Fn() -> NodeResult<Box<dyn HubTransport>> + Send + Sync>,
 }
@@ -397,6 +430,7 @@ impl HubClient {
             command_rx,
             event_tx,
             pending_queries: HashMap::new(),
+            pending_mutations: HashMap::new(),
         };
         let policy = ReconnectPolicy::from_config(&driver.cfg);
         tokio::spawn(async move {
@@ -410,7 +444,7 @@ impl HubClient {
         self.command_tx.clone()
     }
 
-    pub async fn next_event(&self) -> Option<HubEvent> {
+    pub async fn next_event(&self) -> Option<(HubEvent, Uuid)> {
         let mut rx = self.event_rx.lock().await;
         rx.recv().await
     }
@@ -438,6 +472,11 @@ impl HubClient {
         let _ = self.command_tx.send(cmd);
     }
 
+    /// Signal that an inbox event has been locally applied (advances contiguous cursor).
+    pub async fn mark_applied(&self, event_id: Uuid) {
+        let _ = self.command_tx.send(ClientCommand::MarkApplied { event_id });
+    }
+
     /// Ask the hub to read something, and wait for the answer.
     ///
     /// `query` is the serde-tagged body, e.g. `{"transcript_read": {"room_id": ..., "limit": 50}}`.
@@ -462,13 +501,15 @@ struct HubDriver {
     owned_seats: Arc<Mutex<Vec<Uuid>>>,
     transport_factory: Arc<dyn Fn() -> NodeResult<Box<dyn HubTransport>> + Send + Sync>,
     command_rx: mpsc::UnboundedReceiver<ClientCommand>,
-    event_tx: mpsc::UnboundedSender<HubEvent>,
+    event_tx: mpsc::UnboundedSender<(HubEvent, Uuid)>,
     /// In-flight `node.query` requests, keyed by the `request_id` the answer will carry.
     ///
     /// Drained with an error whenever a connection ends: a caller blocked on a read whose answer
     /// died with the socket would otherwise wait forever, and that caller is an MCP tool call
     /// inside a live Claude session.
     pending_queries: HashMap<Uuid, oneshot::Sender<NodeResult<Value>>>,
+    /// In-flight outbound mutations waiting on `mutation.result` (Citadel 6.7).
+    pending_mutations: HashMap<Uuid, oneshot::Sender<NodeResult<Uuid>>>,
 }
 
 impl HubDriver {
@@ -483,6 +524,9 @@ impl HubDriver {
             // is a blocking MCP tool call, and silence there is indistinguishable from a hang.
             for (_, tx) in self.pending_queries.drain() {
                 let _ = tx.send(Err(NodeError::Provider("hub connection lost".into())));
+            }
+            for (_, tx) in self.pending_mutations.drain() {
+                let _ = tx.send(Err(NodeError::Provider("hub connection lost before mutation ack".into())));
             }
             while self.command_rx.try_recv().is_ok() {}
             let delay = policy.delay_ms(attempt);
@@ -523,7 +567,7 @@ impl HubDriver {
 
     async fn serve(&mut self, transport: Box<dyn HubTransport>, accepted: HelloAccepted) -> NodeResult<()> {
         let transport_arc: Arc<dyn HubTransport> = Arc::from(transport);
-        let (reader_tx, mut reader_rx) = mpsc::unbounded_channel::<(HubEvent, Option<i64>)>();
+        let (reader_tx, mut reader_rx) = mpsc::unbounded_channel::<(HubEvent, Uuid, Option<i64>, Value, String)>();
         let transport_for_reader = transport_arc.clone();
         tokio::spawn(async move {
             loop {
@@ -537,23 +581,11 @@ impl HubDriver {
                     Err(_) => continue,
                 };
                 if env.version != PROTOCOL_VERSION { continue; }
-                // A deserialization failure here used to be entirely silent (`.ok()` alone,
-                // dropping the Err with no trace at all): a hub frame whose shape didn't match
-                // HubEvent's field names/types just vanished, and nothing distinguished "the hub
-                // never sent this" from "the hub sent it and this node silently failed to parse
-                // it" — which cost real debugging time chasing what turned out to be exactly the
-                // latter. Every failure now logs the kind and the serde error before being
-                // dropped; the drop-and-continue behavior itself is unchanged.
                 let kind = env.kind.clone();
                 let evt: Option<HubEvent> = match kind.as_str() {
-                    // "seat.interrupt" was missing from this list while `HubEvent::SeatInterrupt`
-                    // was fully handled in main.rs: the hub sent the frame, this arm fell through
-                    // to the catch-all, and every operator cancellation was dropped with nothing
-                    // but a "unrecognized hub frame kind" line. Cancellation looked implemented
-                    // end to end and did nothing on the node.
                     "delivery.assign" | "approval.resolve" | "seat.detach" | "seat.interrupt"
-                    | "query.result" | "ping" => {
-                        match serde_json::from_value(env.payload) {
+                    | "query.result" | "mutation.result" | "ping" => {
+                        match serde_json::from_value(env.payload.clone()) {
                             Ok(evt) => Some(evt),
                             Err(e) => {
                                 warn!(kind = %kind, error = %e, "failed to parse hub event; dropping");
@@ -567,10 +599,57 @@ impl HubDriver {
                     }
                 };
                 if let Some(evt) = evt {
-                    if reader_tx.send((evt, env.cursor)).is_err() { break; }
+                    // Carry the envelope's real event_id + cursor alongside the parsed event.
+                    if reader_tx.send((evt, env.event_id, env.cursor, env.payload, kind)).is_err() {
+                        break;
+                    }
                 }
             }
         });
+        // Replay accepted-but-unapplied inbox work before taking new frames (Citadel 6.8).
+        {
+            let unapplied = self.state.lock().await.unapplied_inbox();
+            for rec in unapplied {
+                let payload: Value = serde_json::from_str(&rec.payload_json).unwrap_or(Value::Null);
+                let kind = rec.kind.clone();
+                let evt: Option<HubEvent> = match kind.as_str() {
+                    "delivery.assign" | "approval.resolve" | "seat.detach" | "seat.interrupt" | "ping" => {
+                        serde_json::from_value(payload.clone()).ok()
+                    }
+                    _ => None,
+                };
+                if let Some(e) = evt {
+                    let _ = self.event_tx.send((e, rec.event_id));
+                    let mut s = self.state.lock().await;
+                    s.mark_inbox_accepted(rec.event_id);
+                    let _ = s;
+                }
+            }
+        }
+        // Flush durable outbox that never got a hub ack.
+        {
+            let pending = self.state.lock().await.pending_outbox();
+            for rec in pending {
+                let payload: Value = match serde_json::from_str(&rec.payload_json) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let env = Envelope {
+                    version: PROTOCOL_VERSION,
+                    event_id: Uuid::now_v7(),
+                    sent_at_ms: now_ms(),
+                    cursor: None,
+                    kind: rec.wire_type.clone(),
+                    payload,
+                };
+                if let Ok(bytes) = serde_json::to_vec(&env) {
+                    let _ = transport_arc.send_frame(&bytes).await;
+                    let mut s = self.state.lock().await;
+                    s.mark_outbox_sent(rec.request_id);
+                    let _ = s.save(&self.cfg.state_path);
+                }
+            }
+        }
         let transport_for_writer = transport_arc.clone();
         let event_tx_for_ping = self.event_tx.clone();
         let heartbeat_ms = accepted.heartbeat_ms.max(self.cfg.heartbeat_ms);
@@ -581,16 +660,15 @@ impl HubDriver {
                 if let Ok(bytes) = encode_frame("node.pong", &pong) {
                     if transport_for_writer.send_frame(&bytes).await.is_err() { break; }
                 }
-                let _ = event_tx_for_ping.send(HubEvent::Ping { nonce: Uuid::now_v7().to_string() });
+                let _ = event_tx_for_ping.send((HubEvent::Ping { nonce: Uuid::now_v7().to_string() }, Uuid::nil()));
             }
         });
+        // reader channel now carries (event, event_id, cursor, payload, kind)
         loop {
             tokio::select! {
                 evt = reader_rx.recv() => {
                     match evt {
-                        Some((e, event_cursor)) => {
-                            // A query answer belongs to one waiting caller, not to the event
-                            // stream. Routed and consumed here.
+                        Some((e, event_id, event_cursor, payload, kind)) => {
                             if let HubEvent::QueryResult { request_id, ok, result, error } = &e {
                                 if let Some(tx) = self.pending_queries.remove(request_id) {
                                     let outcome = if *ok {
@@ -606,20 +684,44 @@ impl HubDriver {
                                 }
                                 continue;
                             }
-                            if let HubEvent::DeliveryAssign { ref delivery, .. } = e {
+                            if let HubEvent::MutationResult { request_id, status, entity_id, error, .. } = &e {
                                 let mut s = self.state.lock().await;
-                                s.upsert_delivery(crate::state::DeliveryRecord {
-                                    delivery_id: delivery.id,
-                                    room_id: delivery.room_id,
-                                    seat_id: delivery.seat_id,
-                                    state: "queued".into(),
-                                    attempt: delivery.attempt,
-                                    last_event_id: None,
-                                });
-                                s.mark_event_acked(Uuid::now_v7(), event_cursor.unwrap_or(accepted.resume_cursor));
+                                s.ack_outbox(*request_id);
+                                let _ = s.save(&self.cfg.state_path);
+                                drop(s);
+                                if let Some(tx) = self.pending_mutations.remove(request_id) {
+                                    let outcome = match status.as_str() {
+                                        "committed" | "replayed" => Ok(entity_id.unwrap_or(*request_id)),
+                                        _ => Err(NodeError::Provider(
+                                            error.clone().unwrap_or_else(|| format!("mutation {status}")),
+                                        )),
+                                    };
+                                    let _ = tx.send(outcome);
+                                }
+                                continue;
+                            }
+                            // Durable inbox: persist real event_id before apply (Citadel 6.8).
+                            let cursor = event_cursor.unwrap_or(0);
+                            {
+                                let mut s = self.state.lock().await;
+                                if s.inbox_already_applied(&event_id) {
+                                    continue;
+                                }
+                                s.receive_inbox(event_id, cursor, &kind, &payload);
+                                s.mark_inbox_accepted(event_id);
+                                if let HubEvent::DeliveryAssign { ref delivery, .. } = e {
+                                    s.upsert_delivery(crate::state::DeliveryRecord {
+                                        delivery_id: delivery.id,
+                                        room_id: delivery.room_id,
+                                        seat_id: delivery.seat_id,
+                                        state: "queued".into(),
+                                        attempt: delivery.attempt,
+                                        last_event_id: Some(event_id),
+                                    });
+                                }
                                 s.save(&self.cfg.state_path)?;
                             }
-                            let _ = self.event_tx.send(e.clone());
+                            let _ = self.event_tx.send((e.clone(), event_id));
                             if let HubEvent::DeliveryAssign { delivery, .. } = e {
                                 let ack = HubCommand::DeliveryAck { delivery_id: delivery.id };
                                 if let Ok(bytes) = encode_frame("node.delivery.ack", &ack) {
@@ -631,6 +733,7 @@ impl HubDriver {
                                 }
                                 s.save(&self.cfg.state_path)?;
                             }
+                            // Contiguous cursor advances only when main calls MarkApplied.
                         }
                         None => return Ok(()),
                     }
@@ -646,8 +749,6 @@ impl HubDriver {
                 let request_id = Uuid::now_v7();
                 let frame = HubCommand::QueryRequest { request_id, query };
                 let bytes = encode_frame("node.query", &frame)?;
-                // Register BEFORE the write: the answer can arrive on the reader task the moment
-                // the bytes land, and a result for an unregistered request is dropped.
                 self.pending_queries.insert(request_id, response);
                 if transport_arc.send_frame(&bytes).await.is_err() {
                     if let Some(tx) = self.pending_queries.remove(&request_id) {
@@ -665,16 +766,15 @@ impl HubDriver {
                     return Ok(());
                 }
                 let req_id = Uuid::now_v7();
-                let payload = serde_json::json!({"kind": kind, "body": body, "reply_to": reply_to});
-                let sha = canonical_sha256(&payload).unwrap_or_default();
+                let payload_for_hash = serde_json::json!({"kind": kind, "body": body, "reply_to": reply_to});
+                let sha = canonical_sha256(&payload_for_hash).unwrap_or_default();
                 let frame = HubCommand::MessagePost {
                     request_id: req_id, seat_id, room_id, message_kind: kind, body, reply_to,
-                    request_payload_sha256: sha,
+                    request_payload_sha256: sha.clone(),
                 };
-                if let Ok(b) = encode_frame("node.message.post", &frame) {
-                    let _ = transport_arc.send_frame(&b).await;
-                }
-                let _ = response.send(Ok(req_id));
+                self.enqueue_and_send_mutation(
+                    transport_arc, req_id, "message_post", "node.message.post", &frame, &sha, Some(response),
+                ).await?;
             }
             Some(ClientCommand::Handoff { from_seat_id, to_seat_id, body, evidence_refs, response }) => {
                 if !self.owned_seats.lock().await.contains(&from_seat_id) {
@@ -686,16 +786,15 @@ impl HubDriver {
                     return Ok(());
                 }
                 let req_id = Uuid::now_v7();
-                let payload = serde_json::json!({"body": body, "evidence_refs": evidence_refs});
-                let sha = canonical_sha256(&payload).unwrap_or_default();
+                let payload_for_hash = serde_json::json!({"body": body, "evidence_refs": evidence_refs});
+                let sha = canonical_sha256(&payload_for_hash).unwrap_or_default();
                 let frame = HubCommand::HandoffCreate {
                     request_id: req_id, from_seat_id, to_seat_id, body, evidence_refs,
-                    request_payload_sha256: sha,
+                    request_payload_sha256: sha.clone(),
                 };
-                if let Ok(b) = encode_frame("node.handoff.create", &frame) {
-                    let _ = transport_arc.send_frame(&b).await;
-                }
-                let _ = response.send(Ok(req_id));
+                self.enqueue_and_send_mutation(
+                    transport_arc, req_id, "handoff_create", "node.handoff.create", &frame, &sha, Some(response),
+                ).await?;
             }
             Some(ClientCommand::ApprovalRequest { seat_id, delivery_id, provider_request_id, description, input_preview, decisions, response }) => {
                 if !self.owned_seats.lock().await.contains(&seat_id) {
@@ -707,34 +806,103 @@ impl HubDriver {
                     request_id: req_id, seat_id, delivery_id, provider_request_id,
                     description, input_preview, decisions,
                 };
-                if let Ok(b) = encode_frame("node.approval.request", &frame) {
-                    let _ = transport_arc.send_frame(&b).await;
-                }
-                let _ = response.send(Ok(req_id));
+                let sha = canonical_sha256(&serde_json::to_value(&frame).unwrap_or(Value::Null)).unwrap_or_default();
+                self.enqueue_and_send_mutation(
+                    transport_arc, req_id, "approval_request", "node.approval.request", &frame, &sha, Some(response),
+                ).await?;
             }
             Some(ClientCommand::DeliveryState { delivery_id, state, error_code }) => {
-                let frame = HubCommand::DeliveryState { delivery_id, state, error_code };
-                if let Ok(b) = encode_frame("node.delivery.state", &frame) {
-                    let _ = transport_arc.send_frame(&b).await;
-                }
+                let req_id = Uuid::now_v7();
+                let frame = HubCommand::DeliveryState {
+                    request_id: Some(req_id), delivery_id, state, error_code,
+                };
+                let sha = canonical_sha256(&serde_json::to_value(&frame).unwrap_or(Value::Null)).unwrap_or_default();
+                self.enqueue_and_send_mutation(
+                    transport_arc, req_id, "delivery_state", "node.delivery.state", &frame, &sha, None,
+                ).await?;
             }
             Some(ClientCommand::RunEvent { delivery_id, event_key, event_type, payload }) => {
-                let frame = HubCommand::RunEvent { delivery_id, event_key, event_type, payload };
-                if let Ok(b) = encode_frame("node.run.event", &frame) {
-                    let _ = transport_arc.send_frame(&b).await;
+                let req_id = Uuid::now_v7();
+                let frame = HubCommand::RunEvent {
+                    request_id: Some(req_id), delivery_id, event_key, event_type, payload,
+                };
+                let sha = canonical_sha256(&serde_json::to_value(&frame).unwrap_or(Value::Null)).unwrap_or_default();
+                self.enqueue_and_send_mutation(
+                    transport_arc, req_id, "run_event", "node.run.event", &frame, &sha, None,
+                ).await?;
+            }
+            Some(ClientCommand::RunCreate { room_id, from_seat_id, executor_seat_id, title, instructions, response }) => {
+                if !self.owned_seats.lock().await.contains(&from_seat_id) {
+                    let _ = response.send(Err(NodeError::UnknownSeat(from_seat_id)));
+                    return Ok(());
                 }
+                let req_id = Uuid::now_v7();
+                let frame = HubCommand::RunCreate {
+                    request_id: req_id, room_id, from_seat_id, executor_seat_id, title, instructions,
+                };
+                let sha = canonical_sha256(&serde_json::to_value(&frame).unwrap_or(Value::Null)).unwrap_or_default();
+                self.enqueue_and_send_mutation(
+                    transport_arc, req_id, "run_create", "node.run.create", &frame, &sha, Some(response),
+                ).await?;
+            }
+            Some(ClientCommand::MarkApplied { event_id }) => {
+                let mut s = self.state.lock().await;
+                s.mark_inbox_applied(event_id);
+                s.save(&self.cfg.state_path)?;
             }
             Some(ClientCommand::SeatPresence { seat_id, state, last_ack_seq }) => {
-                let frame = HubCommand::SeatPresence { seat_id, state, last_ack_seq };
-                if let Ok(b) = encode_frame("node.seat.presence", &frame) {
-                    let _ = transport_arc.send_frame(&b).await;
-                }
+                let req_id = Uuid::now_v7();
+                let frame = HubCommand::SeatPresence {
+                    request_id: Some(req_id), seat_id, state, last_ack_seq,
+                };
+                let sha = canonical_sha256(&serde_json::to_value(&frame).unwrap_or(Value::Null)).unwrap_or_default();
+                self.enqueue_and_send_mutation(
+                    transport_arc, req_id, "seat_presence", "node.seat.presence", &frame, &sha, None,
+                ).await?;
             }
             Some(ClientCommand::Shutdown) => {
                 let _ = transport_arc.close().await;
                 return Err(NodeError::Cancelled);
             }
             None => return Err(NodeError::HubClosed),
+        }
+        Ok(())
+    }
+
+    /// Persist to outbox BEFORE the socket write; resolve the caller only on `mutation.result`.
+    async fn enqueue_and_send_mutation<T: Serialize>(
+        &mut self,
+        transport: &Arc<dyn HubTransport>,
+        request_id: Uuid,
+        kind: &str,
+        wire_type: &str,
+        frame: &T,
+        payload_hash: &str,
+        response: Option<oneshot::Sender<NodeResult<Uuid>>>,
+    ) -> NodeResult<()> {
+        let payload = serde_json::to_value(frame)
+            .map_err(|e| NodeError::InvalidFrame(format!("serialize mutation: {e}")))?;
+        {
+            let mut s = self.state.lock().await;
+            s.enqueue_outbox(request_id, kind, wire_type, &payload, payload_hash);
+            s.save(&self.cfg.state_path)?;
+        }
+        if let Some(tx) = response {
+            self.pending_mutations.insert(request_id, tx);
+        }
+        let bytes = encode_frame(wire_type, frame)?;
+        match transport.send_frame(&bytes).await {
+            Ok(()) => {
+                let mut s = self.state.lock().await;
+                s.mark_outbox_sent(request_id);
+                s.save(&self.cfg.state_path)?;
+            }
+            Err(e) => {
+                if let Some(tx) = self.pending_mutations.remove(&request_id) {
+                    let _ = tx.send(Err(NodeError::Provider(format!("hub send failed: {e}"))));
+                }
+                return Err(e);
+            }
         }
         Ok(())
     }

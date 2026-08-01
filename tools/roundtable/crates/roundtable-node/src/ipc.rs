@@ -71,6 +71,13 @@ pub enum IpcRequest {
         body: String,
         evidence_refs: Vec<String>,
     },
+    /// Agent-authored durable task + run (Citadel delegate / run.create).
+    RunCreate {
+        from_seat_id: Uuid,
+        executor_alias: String,
+        title: String,
+        instructions: String,
+    },
     ApprovalVerdict { approval_id: Uuid, decision: String },
     Ping { nonce: String },
 }

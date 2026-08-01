@@ -4,7 +4,7 @@ import { z } from "zod";
 import { IpcClient } from "./ipc.js";
 import {
   SessionJoinParams, SessionLeaveParams, TranscriptReadParams,
-  TranscriptSearchParams, MessageReplyParams, HandoffCreateParams, ApprovalVerdictParams,
+  TranscriptSearchParams, MessageReplyParams, HandoffCreateParams, RunCreateParams, ApprovalVerdictParams,
 } from "./schemas.js";
 
 export interface ClaudeChannelOptions {
@@ -72,6 +72,21 @@ export function createChannel(opts: ClaudeChannelOptions): { server: McpServer; 
     async (args) => {
       const p = HandoffCreateParams.parse(args);
       const resp = await client.request("handoff_create", p as unknown as Record<string, unknown>);
+      return { content: [{ type: "text", text: JSON.stringify(resp) }] };
+    },
+  );
+  server.tool(
+    "roundtable_delegate",
+    "Create a durable child task/run for another seat (Citadel run.create / delegate). Returns run_id after hub commit.",
+    {
+      from_seat_id: z.string().uuid(),
+      executor_alias: z.string().min(1),
+      title: z.string().min(1).max(512),
+      instructions: z.string().min(1).max(64 * 1024),
+    },
+    async (args) => {
+      const p = RunCreateParams.parse(args);
+      const resp = await client.request("run_create", p as unknown as Record<string, unknown>);
       return { content: [{ type: "text", text: JSON.stringify(resp) }] };
     },
   );

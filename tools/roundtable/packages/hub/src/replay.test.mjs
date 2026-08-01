@@ -96,7 +96,9 @@ test('rule 8: a terminal delivery is never reinjected on reconnect replay', asyn
     store.getDelivery(deliveries[0].id).state, 'sent',
     'the delivery must have been dispatched before it is marked completed',
   );
-  store.setDeliveryState(deliveries[0].id, 'completed');
+  store.forceDeliveryState(deliveries[0].id, 'acked');
+  store.forceDeliveryState(deliveries[0].id, 'running');
+  store.forceDeliveryState(deliveries[0].id, 'completed');
   await closeClient(first);
   await new Promise((r) => setTimeout(r, 50));
 

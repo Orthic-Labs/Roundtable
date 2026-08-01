@@ -86,3 +86,16 @@ test('a task creates one delivery-backed run with ordered idempotent events', ()
   assert.equal(store.listRunEvents(run.id).length, 2);
   store.close();
 });
+
+test('an illegal delivery transition leaves its run and task queued', () => {
+  const store = Store.open(':memory:');
+  const room = store.createRoom({ slug: 'transitions', title: 'Transitions' });
+  const node = store.registerNode({ name: 'node', tokenHash: 'h' });
+  const seat = store.createSeat({ roomId: room.id, nodeId: node.id, alias: 'codex', provider: 'codex', sessionRef: 't' });
+  const { task, run, delivery } = store.createTask({ roomId: room.id, executorSeatId: seat.id, title: 'No rewind', instructions: 'Use graph.' });
+  assert.equal(store.setDeliveryStateForNode({ nodeId: node.id, deliveryId: delivery.id, state: 'running' }), null);
+  assert.equal(store.getDelivery(delivery.id).state, 'queued');
+  assert.equal(store.getRun(run.id).state, 'queued');
+  assert.equal(store.getTask(task.id).state, 'queued');
+  store.close();
+});

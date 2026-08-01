@@ -113,11 +113,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         tokio::select! {
             hub_event = client.next_event() => {
-                let Some(event) = hub_event else {
+                let Some((event, event_id)) = hub_event else {
                     tracing::warn!("hub event stream ended; exiting");
                     break;
                 };
-                handle_hub_event(event, &client, &codex, &ipc, &routing).await;
+                handle_hub_event(event, event_id, &client, &codex, &ipc, &routing).await;
             }
             ipc_request = ipc_rx.recv() => {
                 let Some((req, respond)) = ipc_request else {
@@ -177,6 +177,7 @@ struct PendingApproval {
 /// Claude delivery here would be silently wrong, so it is logged as explicitly unhandled instead.
 async fn handle_hub_event(
     event: HubEvent,
+    event_id: uuid::Uuid,
     client: &HubClient,
     codex: &Arc<CodexAdapter>,
     ipc: &Arc<IpcServer>,
@@ -194,6 +195,7 @@ async fn handle_hub_event(
         HubEvent::DeliveryAssign { delivery, message, seats, .. } => {
             let Some(seat) = seats.iter().find(|s| s.id == delivery.seat_id) else {
                 tracing::warn!(seat_id = %delivery.seat_id, "delivery for a seat not in its own roster");
+                client.mark_applied(event_id).await;
                 return;
             };
             // Must happen before any reply is posted: PostMessage refuses an unowned seat_id.
@@ -213,30 +215,31 @@ async fn handle_hub_event(
                 SeatProvider::Codex => {
                     dispatch_to_codex(delivery.seat_id, message.body, codex).await;
                 }
-                // A Claude seat is driven by a human-attended Claude session over the local IPC
-                // socket, not by a child process this node spawns. The node's job is to hand the
-                // delivery to whatever channel is attached and let it reply on its own schedule;
-                // there is nothing to await here.
-                SeatProvider::Claude => {
+                // Claude-shaped and third-party harness seats (ccx/cdx/minimax/other) are driven
+                // by an attached local session over IPC, not by a child process this node spawns.
+                SeatProvider::Claude
+                | SeatProvider::Minimax
+                | SeatProvider::Ccx
+                | SeatProvider::Cdx
+                | SeatProvider::Other => {
                     ipc.notify(delivery.seat_id, IpcNotification::DeliveryAssign {
                         delivery_id: delivery.id,
                         room_id: message.room_id,
                         body: message.body,
                     }).await;
-                    tracing::info!(seat_id = %delivery.seat_id, "delivery handed to the claude channel");
+                    tracing::info!(seat_id = %delivery.seat_id, provider = ?seat.provider, "delivery handed to the local channel");
                 }
             }
         }
-        // A human answered a Guardian denial in the room. Approving replays the assessment event
-        // back to Codex; any other decision is recorded and the action simply stays denied —
-        // there is no "deny" call to make, because Guardian already denied it.
         HubEvent::ApprovalResolve { approval_id, decision } => {
             let Some(pending) = routing.approvals.lock().await.remove(&approval_id) else {
                 tracing::warn!(%approval_id, "approval resolve for an unknown approval; dropping");
+                client.mark_applied(event_id).await;
                 return;
             };
             if decision != "approve" {
                 tracing::info!(%approval_id, %decision, "approval not granted; action stays denied");
+                client.mark_applied(event_id).await;
                 return;
             }
             let cmd = CodexCommand::ApproveGuardianDeniedAction {
@@ -247,24 +250,23 @@ async fn handle_hub_event(
                 tracing::warn!(%approval_id, error = %e, "approving the denied action failed");
             }
         }
-        // Routed to its waiting caller inside the hub driver and consumed there, so it never
-        // reaches the event stream. Matched explicitly rather than with a wildcard: a new event
-        // variant should break this match and get a decision, not be silently ignored.
         HubEvent::QueryResult { request_id, .. } => {
             tracing::warn!(%request_id, "query result reached the event stream; this should be impossible");
         }
-        // Cancellation contract §2: the operator canceled a delivery this node is running.
-        // Translate to Codex's native interrupt. Work already done is NOT rolled back (§5) — the
-        // interrupt only prevents further work, and anything already posted stays in the room.
+        HubEvent::MutationResult { request_id, .. } => {
+            tracing::warn!(%request_id, "mutation result reached the event stream; this should be impossible");
+        }
         HubEvent::SeatInterrupt { delivery_id, reason } => {
             let seat_id = routing.deliveries.lock().await.iter()
                 .find(|(_, d)| **d == delivery_id).map(|(seat, _)| *seat);
             let Some(seat_id) = seat_id else {
                 tracing::warn!(%delivery_id, "interrupt for a delivery this node is not running; ignoring");
+                client.mark_applied(event_id).await;
                 return;
             };
             let Some(state) = codex.seat(seat_id).await else {
                 tracing::warn!(%delivery_id, %seat_id, "interrupt for a seat with no codex thread; ignoring");
+                client.mark_applied(event_id).await;
                 return;
             };
             tracing::info!(%delivery_id, %seat_id, %reason, "interrupting turn");
@@ -272,11 +274,8 @@ async fn handle_hub_event(
             if let Err(e) = codex.execute(seat_id, cmd).await {
                 tracing::warn!(%delivery_id, error = %e, "turn/interrupt failed");
             }
-            // The delivery is over either way — the hub already moved it to `failed`.
             routing.deliveries.lock().await.remove(&seat_id);
         }
-        // The hub is taking this seat away from this node. Interrupt any running turn, then drop
-        // every trace of the seat so a late Codex event can't post into a room we no longer serve.
         HubEvent::SeatDetach { seat_id, reason } => {
             tracing::info!(%seat_id, %reason, "seat detached");
             if let Some(state) = codex.seat(seat_id).await {
@@ -292,6 +291,9 @@ async fn handle_hub_event(
             routing.approvals.lock().await.retain(|_, p| p.seat_id != seat_id);
             client.unregister_seat(seat_id).await;
         }
+    }
+    if !event_id.is_nil() {
+        client.mark_applied(event_id).await;
     }
 }
 
@@ -383,6 +385,50 @@ async fn handle_ipc_request(
                 ),
                 Ok(Err(e)) => IpcResponse::err(id, format!("hub rejected the handoff: {e}")),
                 Err(_) => IpcResponse::err(id, "hub dropped the handoff without responding"),
+            }
+        }
+        IpcRequest::RunCreate { from_seat_id, executor_alias, title, instructions } => {
+            let Some(room_id) = routing.rooms.lock().await.get(&from_seat_id).copied() else {
+                return IpcResponse::err(id, "unknown seat — this node has no delivery for it");
+            };
+            if !client.owns_seat(from_seat_id).await {
+                return IpcResponse::err(id, "this node does not own that seat");
+            }
+            let roster = match client
+                .query(serde_json::json!({ "roster_read": { "room_id": room_id } }))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => return IpcResponse::err(id, format!("could not read the room roster: {e}")),
+            };
+            let executor_seat_id = roster["seats"]
+                .as_array()
+                .and_then(|seats| {
+                    seats
+                        .iter()
+                        .find(|s| s["alias"].as_str() == Some(executor_alias.as_str()))
+                        .and_then(|s| s["id"].as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                });
+            let Some(executor_seat_id) = executor_seat_id else {
+                return IpcResponse::err(id, format!("no seat with alias '{executor_alias}' in this room"));
+            };
+            let (response, rx) = tokio::sync::oneshot::channel();
+            client.send(ClientCommand::RunCreate {
+                room_id,
+                from_seat_id,
+                executor_seat_id,
+                title,
+                instructions,
+                response,
+            }).await;
+            match rx.await {
+                Ok(Ok(run_id)) => IpcResponse::ok(
+                    id,
+                    serde_json::json!({ "run_id": run_id, "executor_seat_id": executor_seat_id }),
+                ),
+                Ok(Err(e)) => IpcResponse::err(id, format!("hub rejected the delegate: {e}")),
+                Err(_) => IpcResponse::err(id, "hub dropped the delegate without responding"),
             }
         }
         IpcRequest::ApprovalVerdict { .. } => {
