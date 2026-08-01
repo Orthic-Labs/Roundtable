@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$NodeId,
   [Parameter(Mandatory = $true)][string]$NodeToken,
-  [string]$HubUrl = 'wss://roundtable.spoares.com/node/connect'
+  [string]$HubUrl = 'wss://citadel.spoares.com/node/connect'
 )
 
 $ErrorActionPreference = 'Stop'

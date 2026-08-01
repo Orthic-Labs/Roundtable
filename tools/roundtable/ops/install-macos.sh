@@ -17,7 +17,7 @@
 
 set -Eeuo pipefail
 
-HUB_URL="${ROUNDTABLE_HUB_URL:-wss://roundtable.spoares.com/node/connect}"
+HUB_URL="${CITADEL_HUB_URL:-${ROUNDTABLE_HUB_URL:-wss://citadel.spoares.com/node/connect}}"
 LABEL="com.orthiclabs.roundtable-node"
 CONFIG_DIR="$HOME/.config/roundtable"
 DATA_DIR="$HOME/.local/share/roundtable"
