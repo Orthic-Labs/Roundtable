@@ -11,8 +11,12 @@
  * is the whole pipeline — see ops/observability.md.
  */
 
+import { resolveEnv } from './env-compat.mjs';
+
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
-const threshold = LEVELS[process.env.ROUNDTABLE_LOG_LEVEL] ?? LEVELS.info;
+// CITADEL_LOG_LEVEL is primary; ROUNDTABLE_LOG_LEVEL is honored unchanged for backward
+// compatibility, with a one-time deprecation warning (see env-compat.mjs).
+const threshold = LEVELS[resolveEnv('CITADEL_LOG_LEVEL', 'ROUNDTABLE_LOG_LEVEL')] ?? LEVELS.info;
 
 /**
  * Fields that must never be logged, at any level. Tokens and cookies are the ones that would

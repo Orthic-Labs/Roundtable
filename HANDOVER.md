@@ -1,9 +1,9 @@
-# Roundtable — Handover (2026-07-26, deployed and answering)
+# Citadel — Handover (2026-07-26, deployed and answering)
 
 Read this first in a cold session. `STATUS.md` is the detailed authoritative log; this is the
 orientation layer on top of it.
 
-## What Roundtable is
+## What Citadel is
 
 Cross-device rooms for existing local Claude/Codex sessions. A hub on Hetzner owns rooms,
 transcripts, delivery, and auth; a small node runs at login on each machine (Mac/Windows) and
@@ -119,14 +119,14 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
 
 1. **Node, not Rust, for the hub.** The hub is I/O-bound, the Hetzner box runs 15/17 pm2 services
    in Node already, and there is *no viable Rust deploy path*: no builds on the box (ruled out —
-   17 live services, 4 CPUs), no CI (Adrian: standing no-hosted-CI policy, not Roundtable-specific),
+   17 live services, 4 CPUs), no CI (Adrian: standing no-hosted-CI policy, not Citadel-specific),
    and no cross-compile tooling from this arm64 Mac to the box's x86_64 (`zig`/`cross`/`docker` all
    absent). The Rust node stays Rust — it's a small login-time binary with no runtime, which is
    exactly where Rust earns its keep.
 2. **`roundtable.spoares.com`, a subdomain — not `spoares.com/roundtable`.** Adrian correctly
    pointed out the path mount is *operationally simpler* (one line in an already-COPY'd conf, vs a
    new conf + a new Dockerfile COPY line — and a missing-COPY has bitten this box before). Rejected
-   anyway on ONE axis: shared origin = shared trust boundary. Roundtable's session cookie would be
+   anyway on ONE axis: shared origin = shared trust boundary. Citadel's session cookie would be
    sent to the memory dashboard too, and `Path=/roundtable` does NOT fix this — cookie path
    matching is by request path, not page path. Full reasoning is in
    `ops/nginx-roundtable.conf`'s header comment; read it before changing this.

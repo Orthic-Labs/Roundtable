@@ -1,4 +1,4 @@
-# Roundtable — Summary (2026-07-24)
+# Citadel — Summary (2026-07-24)
 
 Cross-device rooms for existing local agent sessions. Round-trip a message from one device to another with a vendor session attached on the receiving side, and stream the result back without sharing keys, prompts, or context.
 

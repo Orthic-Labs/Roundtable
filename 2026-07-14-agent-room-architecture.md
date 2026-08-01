@@ -1,12 +1,12 @@
 # Agent Room — cross-model, local, visible multi-agent sessions
 
-Status: **IMPLEMENTED THROUGH P2 · DISPATCH 2 SPEC LOCKED, GATED ON ROUNDTABLE DISPATCH 1 ACCEPTANCE** · rev 2026-07-22e
+Status: **IMPLEMENTED THROUGH P2 · DISPATCH 2 SPEC LOCKED, GATED ON CITADEL DISPATCH 1 ACCEPTANCE** · rev 2026-07-22e
 Working name: `agent-room`. RightKit crate/package naming remains an Adrian-reserved pre-release decision; inside CodeRight it surfaces as the "Review Room" panel.
 
 > **Execution order (locked 2026-07-22):** freeform cross-device coordination is a separate product
 > specified in `docs/plans/2026-07-22-roundtable-cross-device-architecture.md`. Build and verify that
 > document first. This document's existing P0/P1/P2 implementation remains Council's source of truth;
-> Dispatch 2 below adds a Roundtable projection and remote-seat tunnel without replacing or weakening
+> Dispatch 2 below adds a Citadel projection and remote-seat tunnel without replacing or weakening
 > `agent-room-core`. Do not implement the reserved `freeform` mode in this crate.
 
 > **Naming lock (Adrian, 2026-07-19):** the user-facing name stays **Council**. The `/council` skill
@@ -23,7 +23,7 @@ Adrian runs three model subscriptions — Claude (Claude Code), GPT (Codex), Min
 
 Hard constraints: the authoritative Council core remains local and loopback-only; no third-party room
 service owns its state; agents remain visible local sessions; and taste/ship authority stays human.
-The optional Roundtable projection may traverse Adrian's own Hetzner hub, but the hub is a typed relay
+The optional Citadel projection may traverse Adrian's own Hetzner hub, but the hub is a typed relay
 and presentation surface, never the Council state machine or finding ledger.
 
 ## What we absorb vs. improve over the reference products
@@ -723,7 +723,7 @@ weeks, the room is no longer net-positive against pre-room Council and re-enters
 rejections review — not a quiet budget cut. The §Explicit rejections list is the budget-cut
 mechanism; this section is the trigger.
 
-## Spark Dispatch 2 — project Council safely into Roundtable
+## Spark Dispatch 2 — project Council safely into Citadel
 
 This is the complete implementation guide for the second dispatch. It starts only after
 `docs/plans/2026-07-22-roundtable-cross-device-architecture.md` reaches `IMPLEMENTED` and its ten-case
@@ -731,14 +731,14 @@ acceptance file is green. Dispatch 2 is an integration, not a Council rewrite.
 
 ### Dispatch 2 outcome
 
-Adrian can start a Council from a Roundtable room, watch every phase, interject, and use Mac/Windows
+Adrian can start a Council from a Citadel room, watch every phase, interject, and use Mac/Windows
 Claude or Codex sessions as seats. Blind positions remain invisible to peer seats until
-`agent-room-core` atomically reveals them. Roundtable never decides a phase, finding status,
+`agent-room-core` atomically reveals them. Citadel never decides a phase, finding status,
 disposition, vote, verdict, or seal.
 
 ```mermaid
 flowchart LR
-    UI["Roundtable Council UI"] <--> HUB["roundtable-hub<br/>relay + filtered projection"]
+    UI["Citadel Council UI"] <--> HUB["roundtable-hub<br/>relay + filtered projection"]
     HUB <-->|"coordinator tunnel"| BR["roundtable-council-bridge<br/>one coordinator node"]
     BR <--> CORE["agent-room-core<br/>authoritative loopback service"]
     HUB <-->|"seat RPC tunnel"| NODES["Mac / Windows nodes"]
@@ -750,14 +750,14 @@ flowchart LR
 
 | Responsibility | Authoritative owner | Forbidden owner |
 |---|---|---|
-| Council phase and transitions | `agent-room-core` | Roundtable hub/UI/node |
+| Council phase and transitions | `agent-room-core` | Citadel hub/UI/node |
 | Blind seat projection | `agent-room-core::visible_events` | UI hiding or prompt etiquette |
-| Finding/disposition/vote state | `agent-room-core` SQLite | Roundtable transcript |
-| Cross-device RPC delivery | Roundtable hub/node | Public Council core endpoint |
-| Human-visible transcript | Roundtable projection | Peer seat context during blind phase |
+| Finding/disposition/vote state | `agent-room-core` SQLite | Citadel transcript |
+| Cross-device RPC delivery | Citadel hub/node | Public Council core endpoint |
+| Human-visible transcript | Citadel projection | Peer seat context during blind phase |
 | Seat credentials | coordinator bridge, outside model context | Hetzner database/transcript/model prompt |
-| Human interjection and rulings | authenticated Roundtable human action forwarded to core | agent prose |
-| Sealed evidence | Council JSONL/digests | Roundtable message IDs alone |
+| Human interjection and rulings | authenticated Citadel human action forwarded to core | agent prose |
+| Sealed evidence | Council JSONL/digests | Citadel message IDs alone |
 
 ### Non-negotiable preservation checks
 
@@ -770,23 +770,23 @@ python3 -m pytest tools/review/tests/test_agent_room_driver.py tools/review/test
 ```
 
 Expected baseline from the existing implementation: every command exits 0. If any command is red,
-repair the pre-existing failure separately before adding Roundtable integration. Re-run all three
+repair the pre-existing failure separately before adding Citadel integration. Re-run all three
 after every task below; any regression is a hard stop.
 
 ### Locked architecture decisions
 
-1. One active Council chooses one connected Roundtable node as coordinator. Default is the node
+1. One active Council chooses one connected Citadel node as coordinator. Default is the node
    belonging to the human who starts Council; failover is explicit, never automatic mid-phase.
 2. Coordinator launches the existing `room` binary on loopback and owns all core bearer/resume
    credentials. Credentials never traverse Hetzner.
 3. Remote seats use the same 12 MCP tool names and schemas already exposed by
    `@rightkit/agent-room-mcp`. A new shim changes only the transport from direct loopback HTTP to
-   local Roundtable-node IPC.
+   local Citadel-node IPC.
 4. Hub routes opaque, typed Council RPC requests to the coordinator. It authenticates node/seat
    ownership but cannot interpret or synthesize Council state transitions.
 5. Coordinator invokes the existing core endpoint using the credential mapped to that seat and
    returns only the core response.
-6. `room_next` remains the only way a seat receives Council peer events. The ordinary Roundtable
+6. `room_next` remains the only way a seat receives Council peer events. The ordinary Citadel
    `room_read` and `roundtable_search` tools reject Council rooms with `council_use_typed_tools`.
 7. During `Positions`, position projections stored for Adrian are `human_only`. At atomic reveal,
    the bridge appends new `all_seats` reveal records; it never changes the old row's visibility.
@@ -795,21 +795,21 @@ after every task below; any regression is a hard stop.
 
 ### Dispatch 2 ADR
 
-- **Product outcome:** one visible Roundtable surface for a real cross-machine Council while the
+- **Product outcome:** one visible Citadel surface for a real cross-machine Council while the
   existing core continues to enforce blindness, typed findings, dispositions, votes, and sealing.
-- **Context:** Roundtable already supplies authenticated remote nodes and session adapters after
+- **Context:** Citadel already supplies authenticated remote nodes and session adapters after
   Dispatch 1, but its shared freeform transcript cannot enforce Council privacy or phase state.
 - **Decision:** run `agent-room-core` on one coordinator node and tunnel the existing typed MCP
-  contract through Roundtable; project only core-authorized events into visibility-filtered rows.
+  contract through Citadel; project only core-authorized events into visibility-filtered rows.
 - **Rejected alternatives:** moving the state machine into the hub duplicates Council; exposing the
   loopback core publicly expands attack surface; hiding positions only in React leaks through APIs;
   automatic coordinator failover transfers credentials and creates split-brain risk.
 - **Riskiest assumption:** the round-trip tunnel can preserve long-poll cancellation and per-seat
   visibility without reordering core events. C4/C5 are the smallest executable proof.
-- **Blast radius:** additive Roundtable migration and new bridge/MCP/UI files; existing core code is
+- **Blast radius:** additive Citadel migration and new bridge/MCP/UI files; existing core code is
   characterization-protected and changes only for a separately proven defect.
 - **Rollback:** disable Council endpoints and coordinator registration while retaining additive
-  columns and sealed evidence; ordinary Roundtable rooms and local `/council` continue unchanged.
+  columns and sealed evidence; ordinary Citadel rooms and local `/council` continue unchanged.
 
 ### Dispatch 2 file map
 
@@ -949,7 +949,7 @@ hub → seat node:   council.rpc.result, council.wake
 seat node → hub:   council.rpc.request
 ```
 
-All frames use the existing Roundtable envelope and dedupe rules. `rpc_id` is the idempotency key.
+All frames use the existing Citadel envelope and dedupe rules. `rpc_id` is the idempotency key.
 The hub verifies that the authenticated node owns `seat_id` and that the seat belongs to the named
 Council before forwarding. It never logs `arguments` or `result` bodies at info level.
 
@@ -963,7 +963,7 @@ project(core_event, current_phase) -> zero or more CouncilProjection
 
 Rules:
 
-| Core event | Phase | Roundtable visibility |
+| Core event | Phase | Citadel visibility |
 |---|---|---|
 | charter, roster, budget, phase transition | any | `all_seats` |
 | a seat's own position | Positions | `seat_only(author)` plus separate `human_only` UI copy |
@@ -1001,10 +1001,10 @@ room_resolve, room_rule, room_motion, room_next, room_vote, room_tasks
 ```
 
 The package has one responsibility: validate request shape, send `CouncilRpcRequest` over owner-local
-Roundtable IPC, await the matching response, and return it. It contains no phase logic, visibility
+Citadel IPC, await the matching response, and return it. It contains no phase logic, visibility
 logic, retries beyond `rpc_id` replay, or model-provider branching.
 
-Claude loads this MCP server beside the Roundtable Channel. Codex App Server loads it as a required
+Claude loads this MCP server beside the Citadel Channel. Codex App Server loads it as a required
 MCP server for Council threads. If the shim cannot connect, `thread/start`/Claude session startup
 must fail closed rather than run Council without typed tools.
 
@@ -1032,7 +1032,7 @@ be green before Task C1.
 **Implementation:** add the locked protocol records, migration, filtered query methods, and indexes on
 `(room_id, visibility, seq)` and `(council_id, state)`.
 
-**Verify:** Roundtable protocol/store tests and all existing Council tests pass.
+**Verify:** Citadel protocol/store tests and all existing Council tests pass.
 
 ### Task C2 — implement authenticated opaque routing
 
@@ -1055,7 +1055,7 @@ forwarding; store response before delivery to the seat node.
 **Red tests:**
 
 - start launches one loopback core process with one SQLite file;
-- one core credential mapping exists per Roundtable seat and never appears in WSS frames;
+- one core credential mapping exists per Citadel seat and never appears in WSS frames;
 - RPC method maps one-to-one to the current core endpoint;
 - core rejection is returned unchanged as typed error;
 - coordinator restart resumes from local runtime metadata;
@@ -1084,7 +1084,7 @@ tunnel and receive different phase-gated views from the same core room.
 
 **Red tests:**
 
-- during Positions, seat A cannot read/search seat B's position through any Roundtable endpoint;
+- during Positions, seat A cannot read/search seat B's position through any Citadel endpoint;
 - human UI can render both positions as blind/private records;
 - crash/rejoin during Positions still withholds peer positions;
 - PeerDebate appends an atomic all-seat reveal batch;
@@ -1095,7 +1095,7 @@ tunnel and receive different phase-gated views from the same core room.
 **Implementation:** apply SQL filtering, projection table dedupe, and UI visibility badges. Never
 change an existing message's visibility after insertion.
 
-**Verify:** visibility suite passes with raw HTTP, WebSocket, Roundtable read/search tools, and the
+**Verify:** visibility suite passes with raw HTTP, WebSocket, Citadel read/search tools, and the
 Council MCP `room_next` path.
 
 ### Task C6 — add Council UI and human actions
@@ -1115,15 +1115,15 @@ cannot call human routes.
 **Verify:** web tests/build pass and the hidden browser functional suite produces no console/network
 errors.
 
-### Task C7 — preserve `/council` and add an explicit Roundtable entry
+### Task C7 — preserve `/council` and add an explicit Citadel entry
 
 Do not change default `/council` behavior. Add `--roundtable-room <uuid>` to
 `tools/review/agent_room_driver.py`. Without the flag, current local execution is byte-for-byte
 equivalent at the driver boundary. With it, the driver asks the chosen local node to become
-coordinator and returns the Roundtable URL in its run metadata.
+coordinator and returns the Citadel URL in its run metadata.
 
 **Tests:** default argument path unchanged; invalid room rejected before model launch; coordinator
-offline fails closed; completed run records both Council seal digest and Roundtable room ID; fallback
+offline fails closed; completed run records both Council seal digest and Citadel room ID; fallback
 lane remains available if the integration fails before any Council phase starts.
 
 **Verify:** full `tools/review/tests` suite passes.
@@ -1140,7 +1140,7 @@ Run one real Council with at least Mac Codex, Windows Codex, and one Claude seat
 6. raise one finding, contest it, dispose it with a real receipt, and have the author resolve it;
 7. create one human interjection and one ruling from the web UI;
 8. complete voting, Verdict, seal, export, and digest verification;
-9. stop/restart the Roundtable hub and verify the sealed transcript remains visible;
+9. stop/restart the Citadel hub and verify the sealed transcript remains visible;
 10. run the existing local Council path again to prove no regression.
 
 Write `docs/evidence/roundtable/council-acceptance.json` with node/seat IDs, Council/core room IDs,
@@ -1153,7 +1153,7 @@ and pass/fail. Strip credentials, hidden reasoning, and private prompt plumbing.
 
 Update `docs/ROUNDTABLE-RUNBOOK.md` with starting, pausing, resuming, aborting, sealing, exporting,
 coordinator recovery, dead RPC inspection, and credential rotation. Update this document status to
-`ROUNDTABLE INTEGRATION IMPLEMENTED` only after C8 passes and link the implementation commit and
+`CITADEL INTEGRATION IMPLEMENTED` only after C8 passes and link the implementation commit and
 acceptance evidence.
 
 ## Dispatch 2 exact verification commands
@@ -1179,12 +1179,12 @@ COUNCIL ROUNDTRIP PASS seats=3 blind_leaks=0 reveals=1 sealed=1 regressions=0
 
 ## Dispatch 2 definition of done
 
-- Roundtable Dispatch 1 is already green and deployed.
+- Citadel Dispatch 1 is already green and deployed.
 - Existing Council P0/P1/P2 suites remain green.
 - Remote Mac/Windows seats use the existing 12 typed Council tools.
 - Core credentials never leave the coordinator or enter model-visible content.
 - Every peer transcript path preserves Positions blindness, including read/search/rejoin.
-- Roundtable displays Council phases and human actions without owning Council state.
+- Citadel displays Council phases and human actions without owning Council state.
 - A real three-seat cross-machine Council seals with verified evidence and zero blind leaks.
 - Default `/council` local behavior remains available and unchanged.
 
@@ -1200,10 +1200,10 @@ partially verified room complete.
 - No third-party room server or cloud identity — the entire value is that transcripts, tokens, and traffic never leave the machine.
 - No Microsoft Agent Framework / Agent SDK dependency: the room needs a message bus and a state machine, not an agent runtime; MCP already provides the cross-vendor adapter.
 - No autonomous room-to-pipeline wiring (rooms can't approve, deploy, or advance gates).
-- No Council state machine, blindness rule, or finding ledger in Roundtable.
+- No Council state machine, blindness rule, or finding ledger in Citadel.
 - No raw public/Hetzner endpoint on `agent-room-core`; remote seats traverse the authenticated tunnel.
 - No automatic coordinator failover mid-Council.
-- No agent access to ordinary Roundtable transcript search in Council rooms.
+- No agent access to ordinary Citadel transcript search in Council rooms.
 
 ### Critical Files for Implementation
 

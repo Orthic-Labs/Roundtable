@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make a Roundtable delegation durable, provider-neutral, observable, and node-authorized without replacing its working room/delivery model.
+Make a Citadel delegation durable, provider-neutral, observable, and node-authorized without replacing its working room/delivery model.
 
 ## ADR
 

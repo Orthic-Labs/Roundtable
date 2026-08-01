@@ -1,4 +1,4 @@
-# Roundtable — Authoritative Status
+# Citadel — Authoritative Status
 
 **This file is the single source of truth for what is implemented.** Where README.md,
 SUMMARY.md, CHANGELOG.md, `docs/*.md`, or `.agent/okf/*.md` disagree with this file, this file
@@ -6,7 +6,7 @@ wins. Regenerate or correct them; do not resolve the conflict in their favour.
 
 - **Repository:** `github.com/Orthic-Labs/roundtable` — the canonical home. This tree previously
   sat inside the `bogusyogi/claude` workspace with no `.git` of its own; it is now a proper
-  checkout of this remote. Roundtable work happens here, not in the workspace repo.
+  checkout of this remote. Citadel work happens here, not in the workspace repo.
 - **Measured:** 2026-07-26, clean checkout of `main`.
 - **Method:** `cargo test --workspace` and `node --test src/*.test.mjs` from `main`, plus a real
   deployment driving a real `codex app-server`. Static inspection for anything not covered.

@@ -1,6 +1,6 @@
-<img src=".github/banner.svg" alt="Roundtable — Steer your local agent sessions from any device." width="100%">
+<img src=".github/banner.svg" alt="Citadel — your private control room for live agent work." width="100%">
 
-**Your best coding sessions run on your machines, with your keys, holding context a cloud service never sees. Roundtable lets you steer those live Codex and Claude sessions from a phone, laptop, or browser — without moving provider API keys or hidden session state into anyone's cloud.**
+**Citadel is your private control room for live agent work: steer coding sessions that run on your own machines, with your keys, holding context a cloud service never sees. Reach those live Codex and Claude sessions from a phone, laptop, or browser — without moving provider API keys or hidden session state into anyone's cloud.**
 
 ![license](https://img.shields.io/badge/license-source--available-5362d8?style=flat-square&labelColor=111318)
 ![hub](https://img.shields.io/badge/hub-dependency--free%20Node.js-5362d8?style=flat-square&labelColor=111318)
@@ -81,4 +81,4 @@ Known limits: the node's replay cursor still reconnects from zero (the hub preve
 ---
 
 <sub><b><a href="https://orthic-labs.github.io">Orthic Labs</a></b> — local-first infrastructure for AI-assisted development.<br>
-<a href="https://github.com/Orthic-Labs/Membrane">Membrane</a> · <a href="https://github.com/Orthic-Labs/Cortex">Cortex</a> · <a href="https://github.com/Orthic-Labs/Sentinel">Sentinel</a> · <a href="https://github.com/Orthic-Labs/Roundtable">Roundtable</a> · <a href="https://github.com/Orthic-Labs/Morph">Morph</a> · <a href="https://github.com/Orthic-Labs/CutRight">CutRight</a> · <a href="https://github.com/Orthic-Labs/claudecodeX">claudecodeX</a></sub>
+<a href="https://github.com/Orthic-Labs/Membrane">Membrane</a> · <a href="https://github.com/Orthic-Labs/Cortex">Cortex</a> · <a href="https://github.com/Orthic-Labs/Sentinel">Sentinel</a> · <a href="https://github.com/Orthic-Labs/Roundtable">Citadel</a> · <a href="https://github.com/Orthic-Labs/Morph">Morph</a> · <a href="https://github.com/Orthic-Labs/CutRight">CutRight</a> · <a href="https://github.com/Orthic-Labs/claudecodeX">claudecodeX</a></sub>

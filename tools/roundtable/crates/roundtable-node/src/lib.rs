@@ -1,5 +1,6 @@
 //! Roundtable node library entry point.
 pub mod config;
+pub mod env_compat;
 pub mod hub;
 pub mod ipc;
 pub mod secrets;

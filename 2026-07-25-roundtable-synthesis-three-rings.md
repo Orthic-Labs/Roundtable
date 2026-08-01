@@ -1,12 +1,12 @@
 ---
-title: Roundtable — Three-Ring Synthesis
+title: Citadel — Three-Ring Synthesis
 status: PROPOSED (supersedes nothing until Adrian approves)
 date: 2026-07-25
 responds_to: sol2026-07-25-roundtable-final-peer-capable-architecture.md
 baseline: 2026-07-22-roundtable-cross-device-architecture.md
 ---
 
-# Roundtable — Three-Ring Synthesis
+# Citadel — Three-Ring Synthesis
 
 This document reconciles Sol's 2026-07-25 "Final Peer-Capable Multi-Runtime Architecture"
 against the actual repository state and against Adrian's three stated requirements.
@@ -131,7 +131,7 @@ ClaudeCodeX makes this concrete. `ccx` is Claude Code with four model-slot env v
 arrive through one of those two doors. **The model is a config value inside a harness, not an
 integration.**
 
-Consequence for Roundtable: it never writes a "MiniMax adapter" or a "Qwen adapter." It writes
+Consequence for Citadel: it never writes a "MiniMax adapter" or a "Qwen adapter." It writes
 **two executor adapters** — Claude-Code-shaped (hooks, Channels, Agent SDK) and Codex-shaped
 (App Server, `exec --json`) — and the model name is a *field on the run record*. Sol's §8.5
 per-provider conformance suite collapses to a per-harness one.
@@ -156,7 +156,7 @@ actually emit.
 
 Keep `agent-room-core` exactly as it is. Its blindness state machine and finding ledger are
 the valuable part. Council runs as a workflow profile, projects phase / proposal / critique /
-dissent events into a room view, and its human ruling gate becomes a Roundtable Approval
+dissent events into a room view, and its human ruling gate becomes a Citadel Approval
 object. That is the entire integration.
 
 Explicitly reject Sol's §10.3 "converge persistence once parity is proven" — an open-ended
@@ -231,6 +231,6 @@ prototype would.
 ## Retired terminology (2026-07-25)
 
 `mm` / `claudemm` / `tools/minimax-proxy` are gone; ClaudeCodeX (`ccx` / `cdx`) replaced them
-on the same `:8801` port. Do not reintroduce provider names into the Roundtable domain model —
+on the same `:8801` port. Do not reintroduce provider names into the Citadel domain model —
 the naming discipline is the architecture. Note that `[no-mm]` in the hook layer is unrelated:
 there `MM` means *machine-minimal*, not MiniMax.

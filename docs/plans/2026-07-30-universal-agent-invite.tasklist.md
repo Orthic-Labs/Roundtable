@@ -10,12 +10,12 @@
 - **Status:** PLANNED
 - **Tasklist revision:** TASKLIST_REVISION:1
 - **Goal ID:** NOT_CREATED
-- **Scope boundary:** IN:universal invite issue, copy, revoke, node redemption, exact current-session binding, Codex and Claude adapters, future-provider interface, Mac and Windows transport restoration, tests, deployment; OUT:Cloudflare duration repair, multi-tenant accounts, billing, public signup, unrelated Roundtable defects
+- **Scope boundary:** IN:universal invite issue, copy, revoke, node redemption, exact current-session binding, Codex and Claude adapters, future-provider interface, Mac and Windows transport restoration, tests, deployment; OUT:Cloudflare duration repair, multi-tenant accounts, billing, public signup, unrelated Citadel defects
 - **Authority:** Adrian requested a Google-Meet-style link pasted into any current agent chat; Windows report requires exact-session attachment and restored WSS/app-server prerequisites
 
 ## 1. Goal Contract
 
-- **State A:** STATE_A:Roundtable has enrolled Mac/Windows nodes and room seats, but no invite capability or provider-neutral join; web asks for session catalogs the hub never returns, node never publishes catalogs, Claude join is refused, Codex starts a separate app-server, and Windows currently reports WSS 521 plus Codex initialization timeout.
+- **State A:** STATE_A:Citadel has enrolled Mac/Windows nodes and room seats, but no invite capability or provider-neutral join; web asks for session catalogs the hub never returns, node never publishes catalogs, Claude join is refused, Codex starts a separate app-server, and Windows currently reports WSS 521 plus Codex initialization timeout.
 - **State B:** STATE_B:From any active room, Adrian copies one short-lived single-use invite URL, pastes it into the current Codex, Claude, or future-engine chat on an enrolled Mac/Windows node, and that exact chat joins the room without browser/admin/node secrets or a replacement agent session.
 - **Success proof:** PROOF_COMMAND:node /Volumes/D/claude/roundtable/tools/roundtable/tests/e2e/invite-join.mjs --production --platforms mac,windows --providers codex,claude --require-current-session; EXPECTED:Exit 0 and PASS for Mac Codex current task, Windows Codex current task, Mac Claude current session, invite expiry, single use, revocation, replay refusal, no secret leakage, and no replacement child session.; EVIDENCE:/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/07-production.json
 - **Non-goals:** session catalog as invitation mechanism, new cloud service, provider credentials in URLs, public collaboration accounts, provider engines beyond adapter contract, or cosmetic redesign outside invite control
@@ -136,7 +136,7 @@ Decision: issue one capability URL from browser, redeem it through existing node
 - **Route step:** ROUTE_STEP:R_CAPABILITY_NODE/S7
 - **Action:** ACTION:Deploy the verified hub, PWA, and Mac/Windows node integrations, then run production pasted-link acceptance and rollback checks.
 - **Depends on:** AFTER:R_CAPABILITY_NODE/S6
-- **Advances target:** ADVANCES_STATE_B:Production Roundtable reaches State B with sealed live acceptance evidence and a tested rollback.
+- **Advances target:** ADVANCES_STATE_B:Production Citadel reaches State B with sealed live acceptance evidence and a tested rollback.
 - **Done check:** CHECK:node /Volumes/D/claude/roundtable/tools/roundtable/tests/e2e/invite-join.mjs --production --platforms mac,windows --providers codex,claude --require-current-session
 - **Expected result:** EXPECTED:exit 0 and PASS for Mac Codex current task, Windows Codex current task, Mac Claude current session, invite expiry, single use, revocation, replay refusal, no secret leakage, and no replacement child session.
 - **Evidence path:** /Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/07-production.json

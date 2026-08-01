@@ -4,7 +4,7 @@ All notable changes to this repo. Categories follow [Keep a Changelog](https://k
 
 ## [Unreleased] — deployed, and answering from real Codex, 2026-07-26
 
-Roundtable is live: the hub runs on Hetzner under pm2, the Mac node runs under launchd, and a
+Citadel is live: the hub runs on Hetzner under pm2, the Mac node runs under launchd, and a
 message posted to a room reaches a real `codex app-server` and comes back as the agent's reply.
 Verified by posting "Say exactly: THIRD" and reading `THIRD` back out of the production database.
 
@@ -173,7 +173,7 @@ summary of one day's work, in order.
   tooling from this arm64 Mac to the box's x86_64. The node stays Rust — a small login-time
   binary with no runtime, where Rust earns its keep.
 - **`roundtable.spoares.com`, a subdomain — not `spoares.com/roundtable`.** The path mount is
-  operationally simpler, but same-origin would put Roundtable's session cookie on the same
+  operationally simpler, but same-origin would put Citadel's session cookie on the same
   trust boundary as the memory dashboard, and `Path=/roundtable` does not fix that (cookie path
   matching is by request path, not page path).
 

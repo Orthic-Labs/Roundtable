@@ -1,4 +1,4 @@
-# Roundtable on Windows — handoff
+# Citadel on Windows — handoff
 
 Everything below is for whoever brings `roundtable-node` up on Adrian's Windows machine. The hub
 is already deployed and working; nothing on the server side needs to change. Read `HANDOVER.md`

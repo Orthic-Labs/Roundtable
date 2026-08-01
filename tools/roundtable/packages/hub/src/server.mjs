@@ -23,6 +23,7 @@ import {
   SESSION_COOKIE, hashSecretBytes, tokenMatches, randomToken,
   sessionCookie, clearSessionCookie, sessionFromHeaders, originAllowed,
 } from './auth.mjs';
+import { resolveEnv } from './env-compat.mjs';
 
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -188,8 +189,10 @@ async function readBody(req) {
  */
 export function createHub({
   store, adminToken, secure = true, allowedOrigins = [], webRoot = DEFAULT_WEB_ROOT,
-  accessTeamDomain = process.env.ROUNDTABLE_ACCESS_TEAM_DOMAIN,
-  accessAudience = process.env.ROUNDTABLE_ACCESS_AUD,
+  // CITADEL_ACCESS_* is primary; ROUNDTABLE_ACCESS_* is honored unchanged for backward
+  // compatibility, with a one-time deprecation warning (see env-compat.mjs).
+  accessTeamDomain = resolveEnv('CITADEL_ACCESS_TEAM_DOMAIN', 'ROUNDTABLE_ACCESS_TEAM_DOMAIN'),
+  accessAudience = resolveEnv('CITADEL_ACCESS_AUD', 'ROUNDTABLE_ACCESS_AUD'),
 }) {
   if (!adminToken) throw new Error('adminToken is required');
   const adminDigest = hashSecretBytes(adminToken);

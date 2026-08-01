@@ -1,4 +1,4 @@
-# Roundtable — cross-device rooms for existing local agent sessions
+# Citadel — cross-device rooms for existing local agent sessions
 
 Status: **APPROVED ARCHITECTURE · READY FOR SPARK DISPATCH 1**
 Date: 2026-07-22
@@ -15,7 +15,7 @@ Execution rule: Spark implements this plan exactly. It does not rename component
 
 ```mermaid
 flowchart TB
-    U["Adrian<br/>Roundtable PWA"] -->|"HTTPS / WSS"| H["roundtable-hub<br/>Hetzner"]
+    U["Adrian<br/>Citadel PWA"] -->|"HTTPS / WSS"| H["roundtable-hub<br/>Hetzner"]
     H --- DB[("SQLite<br/>rooms, transcript, deliveries")]
     H <-->|"outbound WSS from node"| MN["roundtable-node<br/>Mac"]
     H <-->|"outbound WSS from node"| WN["roundtable-node<br/>Windows"]
@@ -56,7 +56,7 @@ flowchart TB
 
 ### Transcript visibility
 
-Freeform Roundtable rooms are shared. Every attached seat may read every room message, subject to pagination and retention. The system does **not** inject the whole transcript into every model turn.
+Freeform Citadel rooms are shared. Every attached seat may read every room message, subject to pagination and retention. The system does **not** inject the whole transcript into every model turn.
 
 Each wake envelope contains:
 
@@ -111,13 +111,13 @@ This is the only acceptable failure mode for a single-tenant system: writes neve
 
 ### Decision
 
-Build one Hetzner hub plus one outbound-only node per computer; use Claude Channels and Codex App Server behind a shared typed Roundtable protocol.
+Build one Hetzner hub plus one outbound-only node per computer; use Claude Channels and Codex App Server behind a shared typed Citadel protocol.
 
 ### Alternatives considered
 
 | Alternative | Decision | Reason |
 |---|---|---|
-| Discord as UI and storage | Reject | Once a Hetzner hub is required for routing and delivery, Discord adds another identity, permission, formatting, and failure layer while preventing Roundtable-specific session controls. |
+| Discord as UI and storage | Reject | Once a Hetzner hub is required for routing and delivery, Discord adds another identity, permission, formatting, and failure layer while preventing Citadel-specific session controls. |
 | Browser-only clients | Reject | A browser cannot inject turns into local Claude/Codex processes without a local bridge. |
 | Standard MCP polling | Reject | Standard MCP is tool/request oriented. Polling consumes turns and fails to wake an idle session. Claude Channels provides push; Codex App Server provides turn creation. |
 | Expose laptop ports publicly | Reject | NAT, firewall, certificate, and attack-surface cost is unnecessary. Nodes connect outbound over WSS. |
@@ -133,7 +133,7 @@ Build one Hetzner hub plus one outbound-only node per computer; use Claude Chann
 ### Blast radius, reversibility, and hidden coupling
 
 - **Blast radius:** new sibling workspace only; no schema or behavior changes to RightKit release, MemRight, ClaudeMM proxy, Codex, or Council core.
-- **Reversibility:** stop nodes, stop the systemd service, remove nginx location, and retain/export the SQLite transcript. No app repository depends on Roundtable.
+- **Reversibility:** stop nodes, stop the systemd service, remove nginx location, and retain/export the SQLite transcript. No app repository depends on Citadel.
 - **Admin-token recovery (single-tenant failure surface):** if `ROUND_TABLE_ADMIN_TOKEN` is lost, the protocol has no admin-recovery path — login cannot be performed and node-bearer secrets cannot be rotated. Keep the token in an external credential manager (1Password / macOS Keychain) **before** Task 11 deploys. A rotation procedure is documented in `docs/ROUNDTABLE-RUNBOOK.md` (Task 13).
 - **Hidden coupling:** Claude Channel preview flags, Codex App Server protocol version, local session persistence directories, OS key stores, nginx WebSocket forwarding, and Git push races between seats.
 - **Graph status:** `graph-unavailable`; Blueprint was stale while its generated files had unrelated active changes. Manual evidence came from the existing Council plan, `agent-room-core`, `agent-room-mcp`, current CLI help, and the official vendor contracts linked below.
@@ -153,14 +153,14 @@ Build one Hetzner hub plus one outbound-only node per computer; use Claude Chann
 | RightKit surface | Use |
 |---|---|
 | `rightkit-logs` | **Adopt** at its published crates.io version. Record hub lifecycle, room create/archive, delivery assign/ack/state/complete, dead-letter, node offline/reconnect, approval request/resolve. **Never** message bodies, seat tokens, `session_ref`, bearer secrets, or paired-credential material. Until published, hub emits `tracing` to stderr with structured fields. |
-| `rightkit-platform-ui` | Excluded — Roundtable is a service; the rightkit UI packages target Right Suite desktop apps. |
+| `rightkit-platform-ui` | Excluded — Citadel is a service; the rightkit UI packages target Right Suite desktop apps. |
 | `rightkit-tauri` | Excluded — Hub is Axum on Hetzner; node is a Rust service; no Tauri shell. |
 | `rightkit-updates` | Excluded — single-tenant, no auto-update channel. |
 | `rightkit-release` | Excluded — operator install only via `install-macos.sh` / `install-windows.ps1`. |
 | `rightkit-process` | Excluded — hub spawns no child processes; Codex attachment uses the existing App Server process, not a fresh one. |
 | `rightkit-license` / `rightkit-legal` | Excluded — single-tenant, no licensing. |
 | `@rightkit/qa` | Excluded — hub is a service; PWA QA uses Vitest + Testing Library per Task 6. |
-| `tools/rightkit/packages/agent-room-mcp/` (12 typed Council MCP tools) | **Separate sibling**, not a reuse target. Same problem domain (local Claude/Codex session attachment) at a different layer (Council multi-agent MCP vs. Roundtable room bridge). **No code reuse; share abstract patterns only** (e.g. `session.join` / `session.leave` shape parallels `room_join` / `room_leave`). Verify with `ls tools/rightkit/packages/` before any future consolidation. |
+| `tools/rightkit/packages/agent-room-mcp/` (12 typed Council MCP tools) | **Separate sibling**, not a reuse target. Same problem domain (local Claude/Codex session attachment) at a different layer (Council multi-agent MCP vs. Citadel room bridge). **No code reuse; share abstract patterns only** (e.g. `session.join` / `session.leave` shape parallels `room_join` / `room_leave`). Verify with `ls tools/rightkit/packages/` before any future consolidation. |
 
 ## Repository layout and ownership
 
@@ -209,7 +209,7 @@ tools/roundtable/
 └── tests/e2e/roundtrip.mjs
 ```
 
-Do not place Roundtable inside `tools/rightkit/`; it is an application that may consume patterns from RightKit, not a shared SDK primitive. Do not add `file:`, `link:`, Git, or workspace dependencies on RightKit packages.
+Do not place Citadel inside `tools/rightkit/`; it is an application that may consume patterns from RightKit, not a shared SDK primitive. Do not add `file:`, `link:`, Git, or workspace dependencies on RightKit packages.
 
 **Provider isolation boundary.** Claude attaches through `packages/claude-channel` (a thin MCP shim over the Claude Channel preview feature). Codex attaches through `crates/roundtable-node/src/codex.rs` (a typed adapter over the Codex App Server JSONL protocol). **Breaking vendor APIs only require rewriting the provider adapter**; the hub, store, protocol, HTTP API, WebSocket envelope, schema, and PWA do not change. The same boundary holds for adding a third provider (Groq / Gemini / local LLM) — it is a new `provider::*` module, not a hub change.
 
@@ -433,10 +433,10 @@ Cancellation is operator-only (Adrian via `room cancel <delivery_id>` from the w
 1. Generate App Server schemas. On macOS run `rm -rf /tmp/roundtable-codex-schema && codex app-server generate-json-schema --experimental --out /tmp/roundtable-codex-schema`. On Windows PowerShell run `Remove-Item -Recurse -Force "$env:TEMP\roundtable-codex-schema" -ErrorAction SilentlyContinue; codex app-server generate-json-schema --experimental --out "$env:TEMP\roundtable-codex-schema"`.
 2. Start `codex app-server --stdio` as a child test process.
 3. Send `initialize`, then `initialized`.
-4. Call `thread/start` with the real MemRight checkout as `cwd` and first input `Roundtable attachment probe <uuid>`.
+4. Call `thread/start` with the real MemRight checkout as `cwd` and first input `Citadel attachment probe <uuid>`.
 5. Record returned `thread.id`.
 6. Open Codex Desktop and select the thread with that probe title/history.
-7. Call `turn/start` on the same ID with `Roundtable live update probe <uuid>`.
+7. Call `turn/start` on the same ID with `Citadel live update probe <uuid>`.
 8. Pass only if Desktop displays both the second user message and streamed answer without importing, forking, or reopening another thread.
 9. Write JSON evidence containing OS, Codex version, thread ID, timestamps, request/notification names, `desktop_same_thread: true|false`, and screenshot path. Do not include auth material.
 
@@ -591,7 +591,7 @@ Cancellation is operator-only (Adrian via `room cancel <delivery_id>` from the w
 
 - agent message deltas accumulate locally and publish one final `completion` or `question` message on item/turn completion;
 - command/file progress becomes throttled `progress` messages at most once every 2 seconds;
-- command and file approval requests become typed Roundtable approvals;
+- command and file approval requests become typed Citadel approvals;
 - `tool/requestUserInput` becomes a `question` and pauses the delivery;
 - turn completion sets delivery `completed`, `failed`, or `waiting_approval` from the actual App Server status.
 
@@ -675,7 +675,7 @@ asking Adrian to run the sudo rebuild.
    2026-07-25, installing a toolchain and starting a build on the live box; both were removed.
 
    **Hosted CI is also out.** No `.github/workflows`, no Buildkite/CircleCI/GitLab/Azure, no
-   self-hosted runners. This is a standing workspace decision, not a Roundtable one.
+   self-hosted runners. This is a standing workspace decision, not a Citadel one.
 
    That leaves a genuine constraint with no clean answer today: this Mac is `arm64`, the box is
    `x86_64`, and no cross toolchain is installed (`zig`, `cargo-zigbuild`, `cross`, and `docker`
@@ -755,9 +755,9 @@ The architecture is single-tenant, but numbers should still be visible. **All fo
 | SQLite WAL file size + retention | TBD | `events` table grows monotonically (append-only); define prune policy at first measured run (`DELETE FROM events WHERE created_at_ms < now - 30d AND target_node_id IS NULL`) |
 | End-to-end latency, human mention → model turn | TBD | clock-time logged at `delivery.acked` and `delivery.completed` |
 
-**Cost ratio vs. today's text-copy manual flow.** Pre-Roundtable, Adrian pastes text between machines: zero fixed cost, ~30–120 seconds per handoff, plus the cost of dropping a message. The room is a one-Hetzner-process fixed cost plus per-delivery wake cost. **Until Task 12 measures both**, the room's claim is "eliminates a class of error," not "saves time" — the comparison cell for round-trip latency exists to test whether this expectation holds.
+**Cost ratio vs. today's text-copy manual flow.** Pre-Citadel, Adrian pastes text between machines: zero fixed cost, ~30–120 seconds per handoff, plus the cost of dropping a message. The room is a one-Hetzner-process fixed cost plus per-delivery wake cost. **Until Task 12 measures both**, the room's claim is "eliminates a class of error," not "saves time" — the comparison cell for round-trip latency exists to test whether this expectation holds.
 
-**Failure surface.** If measured monthly spend trends above 2× projection for two consecutive weeks, OR if the dead-letter queue exceeds the 3× successful deliveries cap (Task 13 observability), the room is no longer net-positive against pre-Roundtable and re-enters §Explicit rejections review.
+**Failure surface.** If measured monthly spend trends above 2× projection for two consecutive weeks, OR if the dead-letter queue exceeds the 3× successful deliveries cap (Task 13 observability), the room is no longer net-positive against pre-Citadel and re-enters §Explicit rejections review.
 
 ## Definition of done
 

@@ -3,6 +3,7 @@
 use roundtable_node::{
     codex::{CodexAdapter, CodexCommand, CodexEvent, CodexTurnStatus},
     config::NodeConfig,
+    env_compat,
     hub::{ClientCommand, HubClient, HubEvent, HubTransport, TcpHubChannel, WsHubChannel},
     ipc::{IpcNotification, IpcRequest, IpcResponse, IpcServer},
     secrets::BearerToken,
@@ -35,20 +36,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::debug!("a rustls crypto provider was already installed");
     }
 
-    let config_path = std::env::var("ROUNDTABLE_NODE_CONFIG")
+    // CITADEL_NODE_CONFIG is primary; ROUNDTABLE_NODE_CONFIG is honored unchanged for backward
+    // compatibility, with a one-time deprecation warning (see env_compat).
+    let config_path = env_compat::resolve("CITADEL_NODE_CONFIG", "ROUNDTABLE_NODE_CONFIG")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("config.json"));
+        .unwrap_or_else(|| PathBuf::from("config.json"));
     let config_bytes = std::fs::read(&config_path)?;
     let cfg: NodeConfig = serde_json::from_slice(&config_bytes)?;
     let state = Arc::new(Mutex::new(NodeState::load_or_default(&cfg.state_path)?));
-    // ROUNDTABLE_NODE_TOKEN_FILE keeps the secret out of the working directory (which is also the
-    // data directory, holding state.json and the IPC socket) and out of the process environment,
-    // where any child — including the Codex app-server this spawns — would inherit it. Mirrors the
-    // hub's ROUND_TABLE_ADMIN_TOKEN_FILE. Falls back to ./node.token for local runs.
-    let token_path = std::env::var("ROUNDTABLE_NODE_TOKEN_FILE")
+    // CITADEL_NODE_TOKEN_FILE / CITADEL_NODE_TOKEN are primary; the deprecated ROUNDTABLE_NODE_*
+    // names are honored unchanged (one-time warning on use, see env_compat). Keeping the secret
+    // out of the working directory (which is also the data directory, holding state.json and the
+    // IPC socket) and out of the process environment, where any child — including the Codex
+    // app-server this spawns — would inherit it. Mirrors the hub's ROUND_TABLE_ADMIN_TOKEN_FILE.
+    // Falls back to ./node.token for local runs.
+    let token_path = env_compat::resolve("CITADEL_NODE_TOKEN_FILE", "ROUNDTABLE_NODE_TOKEN_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("node.token"));
-    let token = BearerToken::load("ROUNDTABLE_NODE_TOKEN", &token_path)?;
+        .unwrap_or_else(|| PathBuf::from("node.token"));
+    let token = BearerToken::load_aliased("CITADEL_NODE_TOKEN", "ROUNDTABLE_NODE_TOKEN", &token_path)?;
 
     let url = cfg.hub_url.clone();
 
