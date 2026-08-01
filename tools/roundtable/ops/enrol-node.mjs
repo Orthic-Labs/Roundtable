@@ -17,8 +17,8 @@
 import { Store } from '../packages/hub/src/store.mjs';
 import { randomToken } from '../packages/hub/src/auth.mjs';
 
-const DB = process.env.ROUND_TABLE_DATABASE
-  ?? `${process.env.HOME}/.local/share/roundtable/roundtable.sqlite3`;
+const DB = process.env.CITADEL_DATABASE ?? process.env.ROUND_TABLE_DATABASE
+  ?? `${process.env.HOME}/.local/share/citadel/roundtable.sqlite3`;
 const [cmd, ...args] = process.argv.slice(2);
 const store = Store.open(DB);
 

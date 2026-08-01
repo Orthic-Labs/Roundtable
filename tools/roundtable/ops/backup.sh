@@ -16,7 +16,7 @@
 
 set -Eeuo pipefail
 
-DB="${ROUND_TABLE_DATABASE:-$HOME/.local/share/roundtable/roundtable.sqlite3}"
+DB="${CITADEL_DATABASE:-${ROUND_TABLE_DATABASE:-$HOME/.local/share/citadel/roundtable.sqlite3}}"
 DEST="${ROUND_TABLE_BACKUP_DIR:-$HOME/backups/roundtable}"
 RETAIN_DAYS="${ROUND_TABLE_BACKUP_RETAIN:-14}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"

@@ -42,7 +42,7 @@ function versions() {
 function main() {
   const phase = arg('--phase');
   const evidenceRoot = resolve(arg('--evidence-root') ?? '/Volumes/D/claude/tasks/evidence/citadel-phase0-p1-execution');
-  const plan = resolve(arg('--plan') ?? '/Volumes/D/claude/plans/sol/CITADEL_SYSTEM_REVIEW_AND_ROADMAP.md');
+  const plan = resolve(arg('--plan') ?? '/Volumes/D/claude/docs/plans/sol/CITADEL_SYSTEM_REVIEW_AND_ROADMAP.md');
   const dryRun = process.argv.includes('--dry-run');
   if (!['baseline', 'items', 'final'].includes(phase)) throw new Error('--phase baseline|items|final is required');
   if (!existsSync(plan)) throw new Error(`plan missing: ${plan}`);
