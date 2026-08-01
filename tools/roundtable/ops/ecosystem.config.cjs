@@ -43,7 +43,7 @@ module.exports = {
       // move it. Nothing on this box requires the database to live outside the home directory.
       CITADEL_DATABASE: '/home/vendure/.local/share/citadel/roundtable.sqlite3',
       CITADEL_ADMIN_TOKEN_FILE: '/home/vendure/.config/citadel/admin-token',
-      CITADEL_ORIGINS: 'https://roundtable.spoares.com',
+      CITADEL_ORIGINS: 'https://roundtable.spoares.com,https://citadel.spoares.com',
       // Cloudflare Access fronts this host, so a verified Access assertion authenticates the
       // operator and the admin-token login is not asked for a second time. Neither value is a
       // secret: both appear in the public Access login redirect
