@@ -1,6 +1,6 @@
 # Roundtable Hub (canonical)
 
-**This is the production hub.** The Rust `crates/roundtable-hub` crate is [deprecated/frozen](../../crates/roundtable-hub/DEPRECATED.md).
+**This is the production hub.** The Rust `crates/citadel-hub` crate is [deprecated/frozen](../../crates/citadel-hub/DEPRECATED.md).
 
 Dependency-free Node.js service: rooms, auth, HTTP API, node WebSocket (`/node/connect`), operator event stream (`/api/events`), SQLite store, and delivery dispatch.
 

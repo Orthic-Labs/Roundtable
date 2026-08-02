@@ -158,7 +158,7 @@ async function main() {
   }
 
   console.log('\nDone. Now confirm the nodes survived:');
-  console.log("  ssh vendure 'grep node.connected ~/.pm2/logs/roundtable-hub-out.log | tail -2'");
+  console.log("  ssh vendure 'grep node.connected ~/.pm2/logs/citadel-hub-out.log | tail -2'");
 }
 
 main().catch((err) => {

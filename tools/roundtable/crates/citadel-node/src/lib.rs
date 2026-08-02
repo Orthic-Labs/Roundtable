@@ -1,4 +1,4 @@
-//! Roundtable node library entry point.
+//! Citadel node library entry point.
 pub mod config;
 pub mod env_compat;
 pub mod hub;

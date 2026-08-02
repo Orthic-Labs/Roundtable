@@ -338,7 +338,7 @@ impl CodexAdapter {
         // with "Invalid request: missing field `version`" without it. The fixture accepted the
         // shorter form, so this only surfaced when the node was pointed at real Codex.
         self.call("initialize", serde_json::json!({
-            "clientInfo": { "name": "roundtable-node", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "citadel-node", "version": env!("CARGO_PKG_VERSION") },
         })).await?;
         self.send_notification("initialized", serde_json::json!({})).await?;
         info!("codex app server connected");

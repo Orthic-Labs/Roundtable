@@ -9,14 +9,14 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $configDir = Join-Path $env:APPDATA 'Roundtable'
 $dataDir = Join-Path $env:LOCALAPPDATA 'Roundtable'
 $binDir = Join-Path $env:LOCALAPPDATA 'Roundtable\bin'
-$binary = Join-Path $binDir 'roundtable-node.exe'
+$binary = Join-Path $binDir 'citadel-node.exe'
 $config = Join-Path $configDir 'config.json'
 $token = Join-Path $configDir 'node.token'
 $launcher = Join-Path $configDir 'run-node.ps1'
 $logDir = Join-Path $dataDir 'logs'
 $stdoutLog = Join-Path $logDir 'node.out.log'
 $stderrLog = Join-Path $logDir 'node.err.log'
-$taskName = 'OrthicLabs-Roundtable-Node'
+$taskName = 'OrthicLabs-Citadel-Node'
 $codex = (Get-Command codex.cmd -ErrorAction SilentlyContinue).Source
 if (-not $codex) { throw 'codex.cmd was not found on PATH; install the Codex CLI before installing the node.' }
 $cmd = $env:ComSpec
@@ -29,7 +29,7 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
 }
 $deadline = (Get-Date).AddSeconds(10)
 do {
-  $nodeProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'roundtable-node.exe'" -ErrorAction SilentlyContinue |
+  $nodeProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'citadel-node.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like "*$binary*" })
   if ($nodeProcesses.Count -gt 0) {
     $nodeProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -39,8 +39,8 @@ do {
 if ($nodeProcesses.Count -gt 0) {
   throw "Could not stop the existing node process at $binary"
 }
-& cargo build --release -p roundtable-node --manifest-path (Join-Path $repoRoot 'Cargo.toml')
-Copy-Item (Join-Path $repoRoot 'target\release\roundtable-node.exe') $binary -Force
+& cargo build --release -p citadel-node --manifest-path (Join-Path $repoRoot 'Cargo.toml')
+Copy-Item (Join-Path $repoRoot 'target\release\citadel-node.exe') $binary -Force
 Set-Content -NoNewline -Encoding ascii -Path $token -Value $NodeToken
 $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 & icacls $configDir /inheritance:r /grant:r "*${owner}:(OI)(CI)F" | Out-Null

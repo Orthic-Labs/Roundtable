@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
-use roundtable_hub::{app, auth::hash_secret, AppConfig, AppState};
-use roundtable_protocol::new_id;
-use roundtable_store::{NewNode, Store};
+use citadel_hub::{app, auth::hash_secret, AppConfig, AppState};
+use citadel_protocol::new_id;
+use citadel_store::{NewNode, Store};
 use tower::ServiceExt;
 
 async fn state() -> AppState {
@@ -67,7 +67,7 @@ async fn wrong_origin_returns_403_on_mutations() {
 #[tokio::test]
 async fn revoked_node_token_cannot_upgrade() {
     use axum::response::IntoResponse;
-    use roundtable_hub::http::authenticate_node_headers;
+    use citadel_hub::http::authenticate_node_headers;
 
     let state = state().await;
     let node_id = new_id();

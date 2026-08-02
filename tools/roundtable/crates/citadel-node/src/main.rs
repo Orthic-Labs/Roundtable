@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use roundtable_node::{
+use citadel_node::{
     codex::{CodexAdapter, CodexCommand, CodexEvent, CodexTurnStatus},
     config::NodeConfig,
     env_compat,
@@ -10,7 +10,7 @@ use roundtable_node::{
     state::NodeState,
     NodeError, NodeResult,
 };
-use roundtable_protocol::{DeliveryState, MessageKind, Seat, SeatProvider};
+use citadel_protocol::{DeliveryState, MessageKind, Seat, SeatProvider};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     let client = HubClient::new(cfg.clone(), token.expose().to_string(), state, factory);
-    tracing::info!(node_id = %cfg.node_id, hub = %cfg.hub_url, "roundtable-node connecting");
+    tracing::info!(node_id = %cfg.node_id, hub = %cfg.hub_url, "citadel-node connecting");
 
     // One CodexAdapter for the process. connect() needs &mut self and is only called here, once,
     // before anything shares it; execute()/subscribe()/seat() all take &self (their mutable state
@@ -649,7 +649,7 @@ async fn handle_codex_event(
         (event.body.clone(), kind)
     } else {
         let synthetic_body = format!(
-            "[roundtable-node] turn {status:?} (thread {thread})",
+            "[citadel-node] turn {status:?} (thread {thread})",
             status = event.status, thread = event.thread_id,
         );
         let kind = match event.status {
@@ -675,8 +675,8 @@ async fn handle_codex_event(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use roundtable_node::hub::HelloAccepted;
-    use roundtable_protocol::PROTOCOL_VERSION;
+    use citadel_node::hub::HelloAccepted;
+    use citadel_protocol::PROTOCOL_VERSION;
     use tokio::sync::mpsc;
 
     /// A `HubTransport` double that answers `node.hello` with `hello.accepted` and any

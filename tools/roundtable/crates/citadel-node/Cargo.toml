@@ -1,18 +1,18 @@
 [package]
-name = "roundtable-node"
+name = "citadel-node"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "roundtable_node"
+name = "citadel_node"
 path = "src/lib.rs"
 
 [[bin]]
-name = "roundtable-node"
+name = "citadel-node"
 path = "src/main.rs"
 
 [dependencies]
-roundtable-protocol = { path = "../roundtable-protocol" }
+citadel-protocol = { path = "../citadel-protocol" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread", "net", "io-util", "process", "sync", "time", "fs"] }

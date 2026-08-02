@@ -1,5 +1,5 @@
-use roundtable_hub::{app, AppConfig, AppState};
-use roundtable_store::Store;
+use citadel_hub::{app, AppConfig, AppState};
+use citadel_store::Store;
 use std::net::SocketAddr;
 
 #[tokio::main]

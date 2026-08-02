@@ -1,5 +1,5 @@
-use roundtable_protocol::human_actor_id;
-use roundtable_store::Store;
+use citadel_protocol::human_actor_id;
+use citadel_store::Store;
 use std::sync::Arc;
 use uuid::Uuid;
 

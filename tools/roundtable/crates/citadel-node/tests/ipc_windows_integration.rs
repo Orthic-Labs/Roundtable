@@ -1,6 +1,6 @@
 #![cfg(windows)]
 
-use roundtable_node::ipc::IpcServer;
+use citadel_node::ipc::IpcServer;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ClientOptions;
 use uuid::Uuid;

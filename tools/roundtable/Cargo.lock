@@ -153,6 +153,74 @@ dependencies = [
 ]
 
 [[package]]
+name = "citadel-hub"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "citadel-protocol",
+ "citadel-store",
+ "futures-util",
+ "http-body-util",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "citadel-node"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "citadel-protocol",
+ "futures-util",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "citadel-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
+name = "citadel-store"
+version = "0.1.0"
+dependencies = [
+ "citadel-protocol",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -762,74 +830,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "roundtable-hub"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64",
- "futures-util",
- "http-body-util",
- "rand 0.9.5",
- "roundtable-protocol",
- "roundtable-store",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror 2.0.19",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "roundtable-node"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures-util",
- "roundtable-protocol",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "roundtable-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.19",
- "uuid",
-]
-
-[[package]]
-name = "roundtable-store"
-version = "0.1.0"
-dependencies = [
- "roundtable-protocol",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "uuid",
 ]
 
 [[package]]

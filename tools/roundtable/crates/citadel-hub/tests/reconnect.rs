@@ -1,13 +1,13 @@
-use roundtable_hub::ws::{decode_node_frame, heartbeat_timed_out};
-use roundtable_protocol::{
+use citadel_hub::ws::{decode_node_frame, heartbeat_timed_out};
+use citadel_protocol::{
     new_id, ActorKind, DeliveryReason, DeliveryState, MessageKind, SeatProvider,
 };
-use roundtable_store::{DeliveryUpdate, NewNode, NewSeat, PostMessageCommand, Store, StoreError};
+use citadel_store::{DeliveryUpdate, NewNode, NewSeat, PostMessageCommand, Store, StoreError};
 
 async fn delivery_fixture() -> (
     Store,
-    roundtable_protocol::Node,
-    roundtable_protocol::Delivery,
+    citadel_protocol::Node,
+    citadel_protocol::Delivery,
 ) {
     let store = Store::memory().await.unwrap();
     let room = store
@@ -147,10 +147,10 @@ async fn duplicate_event_id_is_acknowledged_but_not_reinjected() {
 async fn a_node_cannot_post_for_a_seat_it_does_not_own() {
     let (store, _, delivery) = delivery_fixture().await;
     let seat = store.get_seat(delivery.seat_id).await.unwrap();
-    let state = roundtable_hub::AppState::new(store, "admin", roundtable_hub::AppConfig::default());
-    let result = roundtable_hub::router::post_agent_message(
+    let state = citadel_hub::AppState::new(store, "admin", citadel_hub::AppConfig::default());
+    let result = citadel_hub::router::post_agent_message(
         &state,
-        roundtable_hub::router::AgentMessageInput {
+        citadel_hub::router::AgentMessageInput {
             node_id: new_id(),
             room_id: seat.room_id,
             seat_id: seat.id,
@@ -164,6 +164,6 @@ async fn a_node_cannot_post_for_a_seat_it_does_not_own() {
     .await;
     assert!(matches!(
         result,
-        Err(roundtable_hub::router::RouterError::SeatNotOwned)
+        Err(citadel_hub::router::RouterError::SeatNotOwned)
     ));
 }

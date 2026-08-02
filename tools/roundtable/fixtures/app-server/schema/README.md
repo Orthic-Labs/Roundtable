@@ -13,7 +13,7 @@ of every server→client notification with its real wire `method` string.
 
 ## Why this exists
 
-`fixtures/app-server/fake-codex.mjs` — the fixture `roundtable-node`'s tests drive — predates
+`fixtures/app-server/fake-codex.mjs` — the fixture `citadel-node`'s tests drive — predates
 this and gets several real shapes wrong. Discovered by generating this schema and comparing:
 
 - `turn/started` and `turn/completed` notifications carry `{threadId, turn: Turn}` — a full

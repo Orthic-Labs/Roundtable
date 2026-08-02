@@ -93,7 +93,7 @@ async fn unix_socket_permissions_are_owner_only() {
 /// return canned success — `message.reply` answered `{"posted": true}` having posted nothing).
 #[tokio::test]
 async fn real_ipc_server_delivers_notifications_and_routes_requests() {
-    use roundtable_node::ipc::{IpcNotification, IpcRequest, IpcResponse, IpcServer};
+    use citadel_node::ipc::{IpcNotification, IpcRequest, IpcResponse, IpcServer};
     use std::sync::Arc;
 
     let path = tmp_path("real");
@@ -161,7 +161,7 @@ async fn real_ipc_server_delivers_notifications_and_routes_requests() {
 /// With no handler installed, a request is REFUSED rather than answered with a fake success.
 #[tokio::test]
 async fn real_ipc_server_refuses_requests_when_no_handler_is_installed() {
-    use roundtable_node::ipc::IpcServer;
+    use citadel_node::ipc::IpcServer;
 
     let path = tmp_path("nohandler");
     let server = IpcServer::new(path.clone());

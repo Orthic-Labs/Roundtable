@@ -7,10 +7,10 @@ use axum::extract::ws::{
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
-use roundtable_protocol::{
+use citadel_protocol::{
     new_id, DeliveryState, DeliveryStateUpdate, HubEvent, NodeEvent, WsEnvelope, PROTOCOL_VERSION,
 };
-use roundtable_store::{now_ms, DeliveryUpdate, NewApproval};
+use citadel_store::{now_ms, DeliveryUpdate, NewApproval};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -199,7 +199,7 @@ async fn process_node_event(
             router::create_handoff(
                 state,
                 seat.room_id,
-                roundtable_protocol::CreateHandoffRequest {
+                citadel_protocol::CreateHandoffRequest {
                     request_id: payload.request_id,
                     from_seat_id: payload.from_seat_id,
                     to_seat_id: payload.to_seat_id,

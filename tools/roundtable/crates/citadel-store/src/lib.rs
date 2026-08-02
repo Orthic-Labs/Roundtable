@@ -1,4 +1,4 @@
-use roundtable_protocol::{
+use citadel_protocol::{
     canonical_sha256, human_selected_targets, new_id, ActorKind, Approval, Delivery,
     DeliveryReason, DeliveryState, EventRecord, Message, MessageKind, Node, Room, Seat,
     SeatProvider, HANDOFF_DEPTH_LIMIT,
@@ -68,7 +68,7 @@ pub struct HandoffCommand {
     pub from_seat_id: Uuid,
     pub to_seat_id: Uuid,
     pub body: String,
-    pub evidence_refs: Vec<roundtable_protocol::EvidenceRef>,
+    pub evidence_refs: Vec<citadel_protocol::EvidenceRef>,
     pub task_key: Option<String>,
     pub now_ms: i64,
 }
@@ -1466,7 +1466,7 @@ fn insert_system_message(
         tx,
         MessageInsert {
             room_id,
-            actor_id: roundtable_protocol::system_actor_id(),
+            actor_id: citadel_protocol::system_actor_id(),
             actor_kind: ActorKind::System,
             kind: MessageKind::System,
             body,
@@ -1558,7 +1558,7 @@ fn list_context_tx(tx: &Transaction<'_>, room_id: Uuid, after_seq: i64) -> Resul
         message_row(tx, row)
     })?;
     let mut messages = collect_rows(rows)?;
-    while serde_json::to_vec(&messages)?.len() > roundtable_protocol::CONTEXT_MAX_BYTES {
+    while serde_json::to_vec(&messages)?.len() > citadel_protocol::CONTEXT_MAX_BYTES {
         if messages.is_empty() {
             break;
         }

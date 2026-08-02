@@ -64,18 +64,18 @@ log while keeping every failure.
 
 ## On-call runbook
 
-Logs: `~/.pm2/logs/roundtable-hub-out.log` (and `-error.log` for anything that escaped the logger).
+Logs: `~/.pm2/logs/citadel-hub-out.log` (and `-error.log` for anything that escaped the logger).
 
 **Is it up?**
 
 ```bash
-curl -fsS https://roundtable.spoares.com/healthz && pm2 describe roundtable-hub | head -20
+curl -fsS https://roundtable.spoares.com/healthz && pm2 describe citadel-hub | head -20
 ```
 
 **What is failing right now?**
 
 ```bash
-tail -n 2000 ~/.pm2/logs/roundtable-hub-out.log | jq -c 'select(.level == "error" or .level == "warn")'
+tail -n 2000 ~/.pm2/logs/citadel-hub-out.log | jq -c 'select(.level == "error" or .level == "warn")'
 ```
 
 **Is a node actually connected?** (the single most common "it's broken" cause — the hub is fine and
@@ -83,13 +83,13 @@ the Mac's node is not running)
 
 ```bash
 curl -fsS -b "$COOKIE" https://roundtable.spoares.com/api/nodes | jq '.nodes[] | {id, name, online}'
-tail -n 5000 ~/.pm2/logs/roundtable-hub-out.log | jq -c 'select(.event | startswith("node."))' | tail -20
+tail -n 5000 ~/.pm2/logs/citadel-hub-out.log | jq -c 'select(.event | startswith("node."))' | tail -20
 ```
 
 **Slow requests:**
 
 ```bash
-tail -n 5000 ~/.pm2/logs/roundtable-hub-out.log | jq -c 'select(.duration_ms > 1000)'
+tail -n 5000 ~/.pm2/logs/citadel-hub-out.log | jq -c 'select(.duration_ms > 1000)'
 ```
 
 **Trace one delivery end to end** — the hub log tells you what the hub did; the delivery row tells
@@ -120,12 +120,12 @@ sqlite3 ~/.local/share/roundtable/roundtable.sqlite3 \
 **Restart the hub** (safe — SQLite is WAL, nodes reconnect and replay from their cursor):
 
 ```bash
-pm2 restart roundtable-hub && sleep 2 && curl -fsS https://roundtable.spoares.com/healthz
+pm2 restart citadel-hub && sleep 2 && curl -fsS https://roundtable.spoares.com/healthz
 ```
 
 ## Known gaps
 
-- The **node** (`roundtable-node`) logs via `tracing` to stderr in its own format, not this schema.
+- The **node** (`citadel-node`) logs via `tracing` to stderr in its own format, not this schema.
   Its logs live wherever launchd/Task Scheduler put them, per machine. Unifying the two is not
   done.
 - There are no metrics, only logs. No counters, no histograms, no dashboard. `duration_ms` on

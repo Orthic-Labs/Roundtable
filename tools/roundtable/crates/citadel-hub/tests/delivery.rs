@@ -1,15 +1,15 @@
-use roundtable_hub::{router, AppConfig, AppState};
-use roundtable_protocol::{
+use citadel_hub::{router, AppConfig, AppState};
+use citadel_protocol::{
     new_id, CreateHandoffRequest, EvidenceKind, EvidenceRef, MessageKind, PostMessageRequest,
     SeatProvider,
 };
-use roundtable_store::{NewNode, NewSeat, Store, StoreError};
+use citadel_store::{NewNode, NewSeat, Store, StoreError};
 
 async fn fixture() -> (
     AppState,
-    roundtable_protocol::Room,
-    roundtable_protocol::Seat,
-    roundtable_protocol::Seat,
+    citadel_protocol::Room,
+    citadel_protocol::Seat,
+    citadel_protocol::Seat,
 ) {
     let store = Store::memory().await.unwrap();
     let room = store
@@ -237,7 +237,7 @@ async fn handoff_to_offline_seat_remains_queued() {
     .unwrap();
     assert_eq!(
         result.delivery.unwrap().state,
-        roundtable_protocol::DeliveryState::Queued
+        citadel_protocol::DeliveryState::Queued
     );
 }
 
@@ -272,7 +272,7 @@ async fn completion_without_evidence_refs_is_marked_evidence_missing() {
 
 #[tokio::test]
 async fn messages_older_than_seat_cursor_are_readable_but_not_reinjected() {
-    use roundtable_store::DeliveryUpdate;
+    use citadel_store::DeliveryUpdate;
     let (state, room, _, seat_b) = fixture().await;
     let first = router::post_human_message(
         &state,
@@ -293,7 +293,7 @@ async fn messages_older_than_seat_cursor_are_readable_but_not_reinjected() {
         .update_delivery(DeliveryUpdate {
             delivery_id: first.deliveries[0].id,
             node_id: seat_b.node_id,
-            state: roundtable_protocol::DeliveryState::Completed,
+            state: citadel_protocol::DeliveryState::Completed,
             error_code: None,
             now_ms: 3,
         })
@@ -329,7 +329,7 @@ async fn messages_older_than_seat_cursor_are_readable_but_not_reinjected() {
 
 #[tokio::test]
 async fn approval_request_and_resolution_are_durable_and_targeted() {
-    use roundtable_store::{NewApproval, ResolveApproval};
+    use citadel_store::{NewApproval, ResolveApproval};
     let (state, room, _, seat_b) = fixture().await;
     let posted = router::post_human_message(
         &state,

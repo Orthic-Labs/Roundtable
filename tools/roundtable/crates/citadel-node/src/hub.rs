@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use roundtable_protocol::{
+use citadel_protocol::{
     canonical_sha256, validate_message_body, Delivery, DeliveryState, Message, MessageKind,
     PROTOCOL_VERSION, Seat, SeatProvider, SeatState,
 };
@@ -29,7 +29,7 @@ use crate::{NodeError, NodeResult};
 
 /// Node's legacy wire envelope: `{version, event_id, sent_at_ms, type, payload}`.
 ///
-/// NOT the same shape as `roundtable_protocol::WsEnvelope`, which carries a
+/// NOT the same shape as `citadel_protocol::WsEnvelope`, which carries a
 /// `#[serde(flatten)]` event instead of a nested `payload` and a `type` tag. The node
 /// client and the hub were built in different eras against different framings and have
 /// never been integration-tested against each other; node's fixtures

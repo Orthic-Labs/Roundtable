@@ -4,10 +4,10 @@
 # there), and cargo then fails the whole workspace with "failed to load manifest for
 # workspace member". Add new crates to this list.
 members = [
-    "crates/roundtable-hub",
-    "crates/roundtable-node",
-    "crates/roundtable-protocol",
-    "crates/roundtable-store",
+    "crates/citadel-hub",
+    "crates/citadel-node",
+    "crates/citadel-protocol",
+    "crates/citadel-store",
 ]
 resolver = "2"
 
@@ -33,5 +33,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 
-roundtable-protocol = { path = "crates/roundtable-protocol" }
-roundtable-store = { path = "crates/roundtable-store" }
+citadel-protocol = { path = "crates/citadel-protocol" }
+citadel-store = { path = "crates/citadel-store" }

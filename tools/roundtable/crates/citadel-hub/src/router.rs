@@ -1,9 +1,9 @@
 use crate::state::AppState;
-use roundtable_protocol::{
+use citadel_protocol::{
     validate_handoff, validate_message_body, ActorKind, CreateHandoffRequest, DeliveryReason,
     PostMessageRequest, ValidationError,
 };
-use roundtable_store::{HandoffCommand, HandoffResult, PostMessageCommand, PostMessageResult};
+use citadel_store::{HandoffCommand, HandoffResult, PostMessageCommand, PostMessageResult};
 use uuid::Uuid;
 
 pub async fn post_human_message(
@@ -58,7 +58,7 @@ pub struct AgentMessageInput {
     pub room_id: Uuid,
     pub seat_id: Uuid,
     pub request_id: Uuid,
-    pub kind: roundtable_protocol::MessageKind,
+    pub kind: citadel_protocol::MessageKind,
     pub body: String,
     pub reply_to: Option<Uuid>,
     pub now_ms: i64,
@@ -95,7 +95,7 @@ pub enum RouterError {
     #[error(transparent)]
     Validation(#[from] ValidationError),
     #[error(transparent)]
-    Store(#[from] roundtable_store::StoreError),
+    Store(#[from] citadel_store::StoreError),
     #[error("seat_not_owned")]
     SeatNotOwned,
 }

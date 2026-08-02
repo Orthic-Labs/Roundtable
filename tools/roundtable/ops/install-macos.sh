@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install roundtable-node as a login agent on macOS.
+# Install citadel-node as a login agent on macOS.
 #
 # Builds the release binary from this checkout, writes config + token, and registers a launchd
 # agent that starts it at login and keeps it alive. Idempotent: re-running updates the binary and
@@ -12,19 +12,19 @@
 #   ROUNDTABLE_NODE_ID=<uuid> ROUNDTABLE_NODE_TOKEN=<token> ops/install-macos.sh
 #
 # Uninstall:
-#   launchctl bootout gui/$(id -u)/com.orthiclabs.roundtable-node
-#   rm -rf ~/Library/LaunchAgents/com.orthiclabs.roundtable-node.plist ~/.config/roundtable
+#   launchctl bootout gui/$(id -u)/com.orthiclabs.citadel-node
+#   rm -rf ~/Library/LaunchAgents/com.orthiclabs.citadel-node.plist ~/.config/roundtable
 
 set -Eeuo pipefail
 
 HUB_URL="${CITADEL_HUB_URL:-${ROUNDTABLE_HUB_URL:-wss://citadel.spoares.com/node/connect}}"
-LABEL="com.orthiclabs.roundtable-node"
+LABEL="com.orthiclabs.citadel-node"
 CONFIG_DIR="$HOME/.config/roundtable"
 DATA_DIR="$HOME/.local/share/roundtable"
 LOG_DIR="$HOME/Library/Logs/roundtable"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_DEST="$HOME/.local/bin/roundtable-node"
+BIN_DEST="$HOME/.local/bin/citadel-node"
 
 [ "$(uname -s)" = "Darwin" ] || { echo "install-macos.sh is for macOS" >&2; exit 1; }
 command -v cargo >/dev/null || { echo "cargo not found — install Rust first" >&2; exit 1; }
@@ -82,10 +82,10 @@ echo "config: $CONFIG_DIR/config.json"
 
 # ---- binary ------------------------------------------------------------------
 echo "building release binary..."
-( cd "$REPO_ROOT" && cargo build --release -p roundtable-node )
+( cd "$REPO_ROOT" && cargo build --release -p citadel-node )
 # Copy rather than symlink into the checkout: a rebuild mid-session would otherwise swap the
 # binary under a running agent.
-cp "$REPO_ROOT/target/release/roundtable-node" "$BIN_DEST"
+cp "$REPO_ROOT/target/release/citadel-node" "$BIN_DEST"
 chmod 755 "$BIN_DEST"
 echo "binary: $BIN_DEST"
 

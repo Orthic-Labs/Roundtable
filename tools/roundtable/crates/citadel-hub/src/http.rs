@@ -11,12 +11,12 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use roundtable_protocol::{
+use citadel_protocol::{
     new_id, validate_alias, validate_message_body, validate_room, CreateHandoffRequest,
     CreateNodeRequest, CreateRoomRequest, CreateSeatRequest, LoginRequest, PostMessageRequest,
     ResolveApprovalRequest, UpdateRoomRequest,
 };
-use roundtable_store::{
+use citadel_store::{
     now_ms, CreateRoomMutation, NewNode, NewSeat, ResolveApproval as StoreResolveApproval,
     StoreError,
 };
@@ -52,7 +52,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/events", get(ws::browser_events))
         .route("/node/connect", get(ws::node_connect))
         .layer(DefaultBodyLimit::max(
-            roundtable_protocol::MESSAGE_BODY_MAX_BYTES + 16 * 1024,
+            citadel_protocol::MESSAGE_BODY_MAX_BYTES + 16 * 1024,
         ))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
@@ -214,7 +214,7 @@ async fn list_messages(
 ) -> Result<Json<Value>, ApiError> {
     require_session(&state, &headers).await?;
     let limit = query.limit.unwrap_or(100);
-    if limit == 0 || limit > roundtable_protocol::PAGE_LIMIT_MAX {
+    if limit == 0 || limit > citadel_protocol::PAGE_LIMIT_MAX {
         return Err(ApiError::Unprocessable("page_limit".into()));
     }
     let messages = state
@@ -412,9 +412,9 @@ pub enum ApiError {
 }
 
 impl ApiError {
-    fn validation(error: roundtable_protocol::ValidationError) -> Self {
+    fn validation(error: citadel_protocol::ValidationError) -> Self {
         match error {
-            roundtable_protocol::ValidationError::MessageTooLarge => Self::PayloadTooLarge,
+            citadel_protocol::ValidationError::MessageTooLarge => Self::PayloadTooLarge,
             other => Self::Unprocessable(other.to_string()),
         }
     }

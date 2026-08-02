@@ -23,8 +23,8 @@ function atomicJson(file, data) {
 }
 function status() { return run('git', ['status', '--short']).output.trim().split('\n').filter(Boolean); }
 function mapPath(path) {
-  if (path.includes('roundtable-hub') || path.includes('hub-spine-decision')) return 'P0-8';
-  if (path.includes('roundtable-node') || path.includes('roundtable-protocol') || path.includes('durability')) return 'P1-9';
+  if (path.includes('citadel-hub') || path.includes('hub-spine-decision')) return 'P0-8';
+  if (path.includes('citadel-node') || path.includes('citadel-protocol') || path.includes('durability')) return 'P1-9';
   if (path.includes('RunPanel')) return 'P1-10';
   if (path.includes('claude-channel') || path.includes('delegate')) return 'P1-11';
   if (path.includes('operator-events')) return 'P0-4';
@@ -70,7 +70,7 @@ function main() {
       ['P0-8', ['cargo', ['check', '--workspace', '--all-targets'], ROOT]],
       ['P1-9', ['node', ['--test', 'src/durability.test.mjs', 'src/e2e-rust-node.test.mjs'], resolve(ROOT, 'packages/hub')]],
       ['P1-10', ['pnpm', ['--filter', '@roundtable/web', 'test'], ROOT]],
-      ['P1-11', ['cargo', ['test', '-p', 'roundtable-node', '-p', 'roundtable-protocol', '-p', 'roundtable-store'], ROOT]],
+      ['P1-11', ['cargo', ['test', '-p', 'citadel-node', '-p', 'citadel-protocol', '-p', 'citadel-store'], ROOT]],
     ];
     const items = groups.map(([id, [file, args, cwd]]) => { const result = run(file, args, cwd); return { id, status: result.exit === 0 ? 'PASS' : 'OPEN', command: [file, ...args].join(' '), exit: result.exit, output: result.output }; });
     atomicJson(resolve(evidenceRoot, 'items.json'), { schema: 'citadel-items.v1', created_at: now, revision, items, deferred: DEFERRED });

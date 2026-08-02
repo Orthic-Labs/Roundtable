@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fixture Codex App Server, driven by roundtable-node's tests over stdio JSON-RPC.
+// Fixture Codex App Server, driven by citadel-node's tests over stdio JSON-RPC.
 //
 // Every shape here is grounded in fixtures/app-server/schema/ (a real schema generated via
 // `codex app-server generate-json-schema --experimental` against a real, locally-installed
@@ -8,7 +8,7 @@
 //   `input` field and it starts NO turn. It returns {thread: Thread} — the id is `thread.id`.
 // - `turn/start` requires {threadId, input} and returns {turn: Turn} — id at `turn.id`.
 // - `input` is an array of UserInput (tagged union); this fixture understands the `text` variant,
-//   which is all roundtable-node sends.
+//   which is all citadel-node sends.
 // - `turn/started` / `turn/completed` carry {threadId, turn: {id, status}}, never a flat
 //   turnId/status. Status is one of inProgress | completed | interrupted | failed.
 // - The real agent reply is an `item/completed` notification with item.type === "agentMessage"
