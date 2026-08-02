@@ -18,7 +18,9 @@
 .run-event-toggle:disabled{cursor:default;opacity:.85}
 .run-event-seq{color:var(--muted);font-size:11px}
 .run-event-type{font-weight:600;font-size:12px}
-.task-form{display:grid;gap:8px;margin-top:12px}
+.task-form-wrap{margin-top:10px}
+.task-form-wrap summary{cursor:pointer;color:var(--muted);font:500 12px var(--font-mono);padding:4px 0}
+.task-form{display:grid;gap:8px;margin-top:8px}
 .task-form textarea,.task-form select{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:7px;background:var(--deep);color:var(--text)}
 .task-form textarea{min-height:70px}
 .run .error{color:var(--bad)}

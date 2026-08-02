@@ -179,6 +179,8 @@ export function RunPanel({
         />
       ))}
       {!runs.length && <p className="muted">No task runs yet.</p>}
+      <details className="task-form-wrap" open={!runs.length}>
+      <summary>New task</summary>
       <form className="task-form" onSubmit={submit}>
         <label>
           Task title
@@ -212,6 +214,7 @@ export function RunPanel({
           Run task
         </button>
       </form>
+      </details>
     </section>
   );
 }
