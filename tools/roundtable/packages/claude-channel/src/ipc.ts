@@ -9,7 +9,11 @@ export interface IpcClientOptions {
 export class IpcClient {
   private socket: Socket | null = null;
   private buf = "";
-  private waiters: Map<string, (resp: IpcResponseT) => void> = new Map();
+  // Replies are correlated in arrival order, NOT by request_id: the node mints its own response
+  // id and echoes nothing back (ipc.rs — `let request_id = Uuid::now_v7()`), and answers a parse
+  // failure with the nil UUID. It also handles one request at a time per connection (the handler
+  // is awaited before the next read), so arrival order is send order.
+  private waiters: Array<(resp: IpcResponseT) => void> = [];
 
   constructor(private readonly opts: IpcClientOptions) {}
 
@@ -34,8 +38,8 @@ export class IpcClient {
         let parsed;
         try { parsed = IpcResponseSchema.parse(JSON.parse(line)); }
         catch { continue; }
-        const w = this.waiters.get(parsed.request_id);
-        if (w) { this.waiters.delete(parsed.request_id); w(parsed); }
+        const w = this.waiters.shift();
+        if (w) w(parsed);
       }
     });
   }
@@ -48,13 +52,25 @@ export class IpcClient {
       params,
     });
     const sock = this.socket!;
+    // The node deserializes the line straight into its internally-tagged IpcRequest enum, whose
+    // fields sit ALONGSIDE `method` — not nested under `params`. Sending the envelope verbatim
+    // made every request fail to parse ("bad request: missing field `code`"), which the node
+    // answered with a nil-id error the old id-keyed correlation could never match, so each tool
+    // hung until the 5s timeout. No test caught it: they all stub IpcClient.request.
+    const wire = JSON.stringify({ method: req.method, ...req.params }) + "\n";
     return new Promise<IpcResponseT>((resolve, reject) => {
+      // A timed-out request keeps its place in the queue as a tombstone rather than being removed:
+      // the node still owes exactly one reply for it, and dropping the slot would pair that late
+      // reply with the NEXT request's waiter, silently returning one call's answer to another.
+      let live = true;
+      const waiter = (resp: IpcResponseT) => { if (live) { live = false; clearTimeout(timer); resolve(resp); } };
       const timer = setTimeout(() => {
-        this.waiters.delete(req.request_id);
+        if (!live) return;
+        live = false;
         reject(new Error("ipc request timeout: " + method));
       }, this.opts.timeoutMs ?? 5000);
-      this.waiters.set(req.request_id, (resp) => { clearTimeout(timer); resolve(resp); });
-      sock.write(JSON.stringify(req) + "\n");
+      this.waiters.push(waiter);
+      sock.write(wire);
     });
   }
 

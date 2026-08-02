@@ -22,9 +22,14 @@ export const IpcRequestSchema = z.object({
 export type IpcRequestT = z.infer<typeof IpcRequestSchema>;
 
 export const IpcResponseSchema = z.object({
-  request_id: z.string().uuid(),
+  // The node mints its own response id (Uuid::now_v7) and, when a line fails to parse, replies
+  // with the nil UUID — so this is not a correlation key and must not be constrained to one.
+  request_id: z.string(),
   ok: z.boolean(),
-  payload: z.record(z.unknown()).default({}),
+  // IpcResponse::err sends payload: null. `.default({})` only fills in `undefined`, so without
+  // `.nullable()` every error reply failed to parse and was silently dropped as unparseable,
+  // surfacing to the caller as a timeout instead of the node's actual error.
+  payload: z.record(z.unknown()).nullable().default({}),
   error: z.string().optional(),
 });
 export type IpcResponseT = z.infer<typeof IpcResponseSchema>;

@@ -128,7 +128,11 @@ export function createChannel(opts: ClaudeChannelOptions): { server: McpServer; 
       if (!resp.ok) {
         return { content: [{ type: "text", text: `invite redemption failed: ${resp.error ?? "unknown_error"}` }], isError: true };
       }
-      const seat = (resp.payload as Record<string, unknown>).alias ?? (resp.payload as Record<string, unknown>).seat_id ?? "seat";
+      // The node answers redeem_invite with { seat: Seat } (main.rs), so read the alias off that;
+      // the flat alias/seat_id fallbacks stay for the older shape.
+      const payload = (resp.payload ?? {}) as Record<string, unknown>;
+      const inner = (payload.seat ?? {}) as Record<string, unknown>;
+      const seat = inner.alias ?? inner.id ?? payload.alias ?? payload.seat_id ?? "seat";
       return { content: [{ type: "text", text: `Joined as ${String(seat)}. ${JSON.stringify(resp.payload)}` }] };
     },
   );

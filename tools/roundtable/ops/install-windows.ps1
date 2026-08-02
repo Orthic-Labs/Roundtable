@@ -58,6 +58,10 @@ if ($LASTEXITCODE -ne 0) { throw "Could not protect $dataDir" }
 if ($LASTEXITCODE -ne 0) { throw "Could not protect $config" }
 @"
 `$ErrorActionPreference = 'Stop'
+# A machine-wide RUST_LOG (quieter than info) silences the node's own connect/disconnect lines,
+# leaving the operator unable to tell a connected node from a wedged one. Pin the service's filter;
+# CITADEL_NODE_LOG overrides it for debugging.
+`$env:RUST_LOG = if (`$env:CITADEL_NODE_LOG) { `$env:CITADEL_NODE_LOG } else { 'info' }
 `$env:ROUNDTABLE_NODE_CONFIG = '$config'
 `$env:ROUNDTABLE_NODE_TOKEN_FILE = '$token'
 `$process = Start-Process -FilePath '$binary' -WorkingDirectory '$dataDir' -RedirectStandardOutput '$stdoutLog' -RedirectStandardError '$stderrLog' -PassThru -Wait

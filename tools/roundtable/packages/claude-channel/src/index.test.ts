@@ -67,3 +67,89 @@ test("citadel_join surfaces the node/hub error when the node is unreachable", as
   await mcpClient.close();
   await server.close();
 });
+
+// Every test above stubs IpcClient.request, so none of them ever encoded a byte for the node.
+// That gap hid three wire breaks at once: params nested instead of flat, replies correlated by an
+// id the node never echoes, and a null payload on error replies failing schema parse. These tests
+// speak to a fake node over a real socket, asserting the bytes the Rust parser actually accepts.
+import { createServer, type Server } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function fakeNode(handler: (req: Record<string, unknown>) => unknown): Promise<{ server: Server; path: string }> {
+  const path = process.platform === "win32"
+    ? String.raw`\\.\pipe\citadel-test-` + `${process.pid}-${Math.random().toString(36).slice(2)}`
+    : join(tmpdir(), `citadel-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
+  const server = createServer((sock) => {
+    let buf = "";
+    sock.setEncoding("utf8");
+    sock.on("data", (chunk: string) => {
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        sock.write(JSON.stringify(handler(JSON.parse(line))) + "\n");
+      }
+    });
+  });
+  return new Promise((resolve) => server.listen(path, () => resolve({ server, path })));
+}
+
+test("wire: request fields are flat beside method, as the node's tagged enum requires", async () => {
+  let seen: Record<string, unknown> | undefined;
+  const { server, path } = await fakeNode((req) => {
+    seen = req;
+    // Mirrors the node: its own response id, never the caller's.
+    return { request_id: "00000000-0000-0000-0000-000000000001", ok: true, payload: { seat: { alias: "zephyr" } } };
+  });
+  const client = new IpcClient({ socketPath: path, timeoutMs: 2000 });
+  const resp = await client.request("redeem_invite", { code: "cit_x", alias: "a", session_ref: "s", provider: "claude" });
+
+  assert.equal(seen?.method, "redeem_invite");
+  assert.equal(seen?.code, "cit_x", "code must sit beside method, not under params");
+  assert.equal(seen?.params, undefined, "no params envelope reaches the node");
+  assert.equal(resp.ok, true);
+
+  client.close();
+  server.close();
+});
+
+test("wire: an error reply with a null payload and nil id still resolves the caller", async () => {
+  const { server, path } = await fakeNode(() => ({
+    request_id: "00000000-0000-0000-0000-000000000000",
+    ok: false,
+    payload: null,
+    error: "invite_expired",
+  }));
+  const client = new IpcClient({ socketPath: path, timeoutMs: 2000 });
+  const resp = await client.request("redeem_invite", { code: "cit_x", session_ref: "s", provider: "claude" });
+
+  assert.equal(resp.ok, false);
+  assert.equal(resp.error, "invite_expired");
+
+  client.close();
+  server.close();
+});
+
+test("wire: concurrent requests get their own replies, in order", async () => {
+  const { server, path } = await fakeNode((req) => ({
+    request_id: "00000000-0000-0000-0000-000000000002",
+    ok: true,
+    payload: { echo: req.nonce },
+  }));
+  const client = new IpcClient({ socketPath: path, timeoutMs: 2000 });
+  await client.connect();
+  const [a, b, c] = await Promise.all([
+    client.request("ping", { nonce: "a" }),
+    client.request("ping", { nonce: "b" }),
+    client.request("ping", { nonce: "c" }),
+  ]);
+
+  assert.equal((a.payload as Record<string, unknown>).echo, "a");
+  assert.equal((b.payload as Record<string, unknown>).echo, "b");
+  assert.equal((c.payload as Record<string, unknown>).echo, "c");
+
+  client.close();
+  server.close();
+});

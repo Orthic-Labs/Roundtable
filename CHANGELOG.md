@@ -2,6 +2,36 @@
 
 All notable changes to this repo. Categories follow [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`packages/claude-channel` could never talk to the node.** Three breaks on one wire, all
+  surfacing as a 5s "ipc request timeout" from every tool, `citadel_join` included: requests were
+  sent as `{request_id, method, params:{…}}` while the node deserializes the line straight into an
+  internally-tagged enum whose fields sit beside `method`; replies were correlated by a
+  `request_id` the node never echoes (it mints its own `Uuid::now_v7`, and answers a parse failure
+  with the nil UUID); and `IpcResponse::err` sends `payload: null`, which the response schema
+  rejected, so error replies were dropped as unparseable. The channel now encodes flat, correlates
+  in arrival order (the node handles one request per connection at a time, and a timed-out request
+  leaves a tombstone so a late reply is never paired with the next caller), and accepts a null
+  payload. No test caught any of it — all of them stubbed `IpcClient.request`, so nothing ever put
+  a byte on the wire; added tests that speak to a fake node over a real socket.
+- **`citadel_join`'s success line** read a flat `alias`/`seat_id`; the node answers with
+  `{ seat: Seat }`, so every successful join reported "Joined as seat".
+- **The node's own log was silenced by a machine-wide `RUST_LOG`.** The Windows launcher now pins
+  the service's filter (override with `CITADEL_NODE_LOG`), so `citadel-node connecting` and the
+  IPC/codex lines reach `node.out.log` — without it an operator cannot tell a connected node from
+  a wedged one, which is the exact case `main.rs` warns about.
+
+### Added
+
+- **`packages/claude-channel/src/bin.ts`** — stdio entrypoint. `runStdioServer` was exported but
+  nothing called it and the package declared no `bin`, so no Claude session could load the channel
+  and its tools were unreachable. Resolves the pipe path from the node's own config so the two
+  cannot drift; `CITADEL_IPC_PATH` overrides for fixtures. Register with:
+  `claude mcp add --scope user citadel-channel -- node <repo>/tools/roundtable/packages/claude-channel/dist/bin.js`
+
 ## [Unreleased] — deployed, and answering from real Codex, 2026-07-26
 
 Citadel is live: the hub runs on Hetzner under pm2, the Mac node runs under launchd, and a
