@@ -56,10 +56,10 @@ node ops/enrol-node.mjs room myproject "My project"
 node ops/enrol-node.mjs seat myproject mac mac-codex codex
 
 # on the Mac
-ROUNDTABLE_NODE_ID=<uuid> ROUNDTABLE_NODE_TOKEN=<token> ops/install-macos.sh
+CITADEL_NODE_ID=<uuid> CITADEL_NODE_TOKEN=<token> ops/install-macos.sh
 ```
 
-The node installs as a launchd agent (`com.orthiclabs.roundtable-node`). The store is SQLite in WAL mode with a daily integrity-checked backup (Node's built-in `node:sqlite` — no extra tooling, 14-day retention).
+The node installs as a launchd agent (`com.orthiclabs.citadel-node`). The store is SQLite in WAL mode with a daily integrity-checked backup (Node's built-in `node:sqlite` — no extra tooling, 14-day retention).
 
 ```sh
 cargo test --workspace              # 76 Rust tests: protocol, store, hub, node
@@ -81,4 +81,4 @@ Known limits: the node's replay cursor still reconnects from zero (the hub preve
 ---
 
 <sub><b><a href="https://orthic-labs.github.io">Orthic Labs</a></b> — local-first infrastructure for AI-assisted development.<br>
-<a href="https://github.com/Orthic-Labs/Membrane">Membrane</a> · <a href="https://github.com/Orthic-Labs/Cortex">Cortex</a> · <a href="https://github.com/Orthic-Labs/Sentinel">Sentinel</a> · <a href="https://github.com/Orthic-Labs/Roundtable">Citadel</a> · <a href="https://github.com/Orthic-Labs/Morph">Morph</a> · <a href="https://github.com/Orthic-Labs/CutRight">CutRight</a> · <a href="https://github.com/Orthic-Labs/claudecodeX">claudecodeX</a></sub>
+<a href="https://github.com/Orthic-Labs/Membrane">Membrane</a> · <a href="https://github.com/Orthic-Labs/Cortex">Cortex</a> · <a href="https://github.com/Orthic-Labs/Sentinel">Sentinel</a> · <a href="https://github.com/Orthic-Labs/citadel">Citadel</a> · <a href="https://github.com/Orthic-Labs/Morph">Morph</a> · <a href="https://github.com/Orthic-Labs/CutRight">CutRight</a> · <a href="https://github.com/Orthic-Labs/claudecodeX">claudecodeX</a></sub>

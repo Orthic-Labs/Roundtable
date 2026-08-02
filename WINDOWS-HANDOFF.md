@@ -1,6 +1,6 @@
 # Citadel on Windows — handoff
 
-Everything below is for whoever brings `roundtable-node` up on Adrian's Windows machine. The hub
+Everything below is for whoever brings `citadel-node` up on Adrian's Windows machine. The hub
 is already deployed and working; nothing on the server side needs to change. Read `HANDOVER.md`
 first for the system as a whole, then this.
 
@@ -13,7 +13,7 @@ Two things are already known-broken and are NOT your fault — read
 
 ## The blocker you will hit in the first 30 seconds
 
-**`roundtable-node` does not compile on Windows today** — but as of 2026-07-26 the reason is much
+**`citadel-node` does not compile on Windows today** — but as of 2026-07-26 the reason is much
 smaller than it was, and the remaining gap is one named function.
 
 **What was already done on the Mac** (verified green: `cargo test --workspace` → 73 passed, the
@@ -103,7 +103,7 @@ The shape that will hurt least:
 `ops/install-windows.ps1` does not exist. `ops/install-macos.sh` is the model — read it; the
 PowerShell version needs the same five jobs:
 
-1. Build the release binary (`cargo build --release -p roundtable-node`).
+1. Build the release binary (`cargo build --release -p citadel-node`).
 2. Copy it out of `target/` to a stable location. **Copy, do not point the service at the build
    output** — a rebuild mid-session would swap the binary under a running service.
 3. Write `config.json` and the token file with an ACL restricted to the current user (the Unix
@@ -122,14 +122,14 @@ PowerShell version needs the same five jobs:
 Same as the Mac. On the box:
 
 ```bash
-ssh vendure 'node ~/sites/roundtable/tools/roundtable/ops/enrol-node.mjs node windows'
-ssh vendure 'node ~/sites/roundtable/tools/roundtable/ops/enrol-node.mjs seat main windows win-codex codex'
+ssh vendure 'node ~/sites/citadel/tools/citadel/ops/enrol-node.mjs node windows'
+ssh vendure 'node ~/sites/citadel/tools/citadel/ops/enrol-node.mjs seat main windows win-codex codex'
 ```
 
 That prints a `node_id` and a `token`, once. The token is not recoverable — if it is lost, enrol
 again. Feed both to the installer.
 
-Hub URL is `wss://roundtable.spoares.com/node/connect`. No tunnel, no VPN; the node dials outbound.
+Hub URL is `wss://citadel.spoares.com/node/connect`. No tunnel, no VPN; the node dials outbound.
 
 ## Things that will waste your time if nobody tells you
 
@@ -200,12 +200,12 @@ it is new, and the first thing to check is whether a test failed before its `t.a
 
 Same proof used for the Mac — do not settle for "the service is running":
 
-1. `ssh vendure 'grep node.connected ~/.pm2/logs/roundtable-hub-out.log | tail -1'` shows the
+1. `ssh vendure 'grep node.connected ~/.pm2/logs/citadel-hub-out.log | tail -1'` shows the
    Windows `node_id`.
 2. Post to its seat and read the reply back out of the production database:
 
 ```bash
-ssh vendure 'cd ~/sites/roundtable/tools/roundtable && node -e "
+ssh vendure 'cd ~/sites/citadel/tools/citadel && node -e "
 import(\"./packages/hub/src/store.mjs\").then(({Store})=>{
   const s=Store.open(process.env.HOME+\"/.local/share/roundtable/roundtable.sqlite3\");
   const room=s.getRoomBySlug(\"main\");

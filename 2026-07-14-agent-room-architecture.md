@@ -4,7 +4,7 @@ Status: **IMPLEMENTED THROUGH P2 · DISPATCH 2 SPEC LOCKED, GATED ON CITADEL DIS
 Working name: `agent-room`. RightKit crate/package naming remains an Adrian-reserved pre-release decision; inside CodeRight it surfaces as the "Review Room" panel.
 
 > **Execution order (locked 2026-07-22):** freeform cross-device coordination is a separate product
-> specified in `docs/plans/2026-07-22-roundtable-cross-device-architecture.md`. Build and verify that
+> specified in `docs/plans/2026-07-22-citadel-cross-device-architecture.md`. Build and verify that
 > document first. This document's existing P0/P1/P2 implementation remains Council's source of truth;
 > Dispatch 2 below adds a Citadel projection and remote-seat tunnel without replacing or weakening
 > `agent-room-core`. Do not implement the reserved `freeform` mode in this crate.
@@ -726,7 +726,7 @@ mechanism; this section is the trigger.
 ## Spark Dispatch 2 — project Council safely into Citadel
 
 This is the complete implementation guide for the second dispatch. It starts only after
-`docs/plans/2026-07-22-roundtable-cross-device-architecture.md` reaches `IMPLEMENTED` and its ten-case
+`docs/plans/2026-07-22-citadel-cross-device-architecture.md` reaches `IMPLEMENTED` and its ten-case
 acceptance file is green. Dispatch 2 is an integration, not a Council rewrite.
 
 ### Dispatch 2 outcome
@@ -738,7 +738,7 @@ disposition, vote, verdict, or seal.
 
 ```mermaid
 flowchart LR
-    UI["Citadel Council UI"] <--> HUB["roundtable-hub<br/>relay + filtered projection"]
+    UI["Citadel Council UI"] <--> HUB["citadel-hub<br/>relay + filtered projection"]
     HUB <-->|"coordinator tunnel"| BR["roundtable-council-bridge<br/>one coordinator node"]
     BR <--> CORE["agent-room-core<br/>authoritative loopback service"]
     HUB <-->|"seat RPC tunnel"| NODES["Mac / Windows nodes"]
@@ -787,7 +787,7 @@ after every task below; any regression is a hard stop.
 5. Coordinator invokes the existing core endpoint using the credential mapped to that seat and
    returns only the core response.
 6. `room_next` remains the only way a seat receives Council peer events. The ordinary Citadel
-   `room_read` and `roundtable_search` tools reject Council rooms with `council_use_typed_tools`.
+   `room_read` and `citadel_search` tools reject Council rooms with `council_use_typed_tools`.
 7. During `Positions`, position projections stored for Adrian are `human_only`. At atomic reveal,
    the bridge appends new `all_seats` reveal records; it never changes the old row's visibility.
 8. A coordinator disconnect pauses the Council. It does not elect a replacement because moving
@@ -816,18 +816,18 @@ after every task below; any regression is a hard stop.
 Create or modify exactly these paths:
 
 ```text
-tools/roundtable/
+tools/citadel/
 ├── crates/
-│   ├── roundtable-protocol/src/council.rs                  # tunnel/projection types
-│   ├── roundtable-store/migrations/0002_council.sql        # room kind + visibility + coordinator
-│   ├── roundtable-store/src/lib.rs                         # filtered transcript queries
-│   ├── roundtable-hub/src/council.rs                       # auth/routing only
-│   ├── roundtable-hub/src/http.rs                          # Council start/interject/rule endpoints
-│   ├── roundtable-hub/src/ws.rs                            # opaque coordinator tunnel
-│   ├── roundtable-hub/tests/council_visibility.rs
-│   ├── roundtable-node/src/council.rs                      # coordinator and seat clients
-│   ├── roundtable-node/src/ipc.rs                          # typed Council IPC methods
-│   └── roundtable-node/tests/council_tunnel.rs
+│   ├── citadel-protocol/src/council.rs                  # tunnel/projection types
+│   ├── citadel-store/migrations/0002_council.sql        # room kind + visibility + coordinator
+│   ├── citadel-store/src/lib.rs                         # filtered transcript queries
+│   ├── citadel-hub/src/council.rs                       # auth/routing only
+│   ├── citadel-hub/src/http.rs                          # Council start/interject/rule endpoints
+│   ├── citadel-hub/src/ws.rs                            # opaque coordinator tunnel
+│   ├── citadel-hub/tests/council_visibility.rs
+│   ├── citadel-node/src/council.rs                      # coordinator and seat clients
+│   ├── citadel-node/src/ipc.rs                          # typed Council IPC methods
+│   └── citadel-node/tests/council_tunnel.rs
 ├── packages/
 │   ├── council-mcp/
 │   │   ├── package.json
@@ -849,11 +849,11 @@ docs/
 └── evidence/roundtable/council-acceptance.json             # final evidence
 ```
 
-Do not copy `agent-room-core` into `tools/roundtable`. Do not add a network listener to the core.
+Do not copy `agent-room-core` into `tools/citadel`. Do not add a network listener to the core.
 
 ### Protocol extension
 
-Add `council.rs` and export these types from `roundtable-protocol`:
+Add `council.rs` and export these types from `citadel-protocol`:
 
 ```rust
 pub enum RoomKind { Freeform, Council }
@@ -861,7 +861,7 @@ pub enum MessageVisibility { HumanOnly, AllSeats, SeatOnly { seat_id: Uuid } }
 
 pub struct CouncilStart {
     pub request_id: Uuid,
-    pub roundtable_room_id: Uuid,
+    pub citadel_room_id: Uuid,
     pub coordinator_node_id: Uuid,
     pub topic: String,
     pub mode: String,
@@ -914,7 +914,7 @@ freeform prose into typed operations.
 - add `messages.visibility TEXT NOT NULL DEFAULT 'all_seats'` with check
   `human_only|all_seats|seat_only`;
 - add `messages.visible_seat_id TEXT NULL` and a check that it is non-null only for `seat_only`;
-- create `councils(id, roundtable_room_id UNIQUE, coordinator_node_id, core_room_id,
+- create `councils(id, citadel_room_id UNIQUE, coordinator_node_id, core_room_id,
   state, phase, sealed_digest, created_at_ms, updated_at_ms)`;
 - create `council_seats(council_id, seat_id, core_seat_id, state,
   PRIMARY KEY(council_id, seat_id), UNIQUE(council_id, core_seat_id))`;
@@ -955,7 +955,7 @@ Council before forwarding. It never logs `arguments` or `result` bodies at info 
 
 ### Projection policy
 
-Implement one pure function in `roundtable-node/src/council.rs`:
+Implement one pure function in `citadel-node/src/council.rs`:
 
 ```text
 project(core_event, current_phase) -> zero or more CouncilProjection
@@ -1012,7 +1012,7 @@ must fail closed rather than run Council without typed tools.
 
 ### Task C0 — characterize and freeze existing Council behavior
 
-Create `tools/roundtable/fixtures/council/characterization.json` by running one existing two-seat
+Create `tools/citadel/fixtures/council/characterization.json` by running one existing two-seat
 Council fixture. Record ordered phases, visible event IDs per seat, accepted/rejected tool calls,
 finding terminality, seal digest, and export digest.
 
@@ -1163,12 +1163,12 @@ cargo fmt --manifest-path tools/rightkit/Cargo.toml --all -- --check
 cargo test --manifest-path tools/rightkit/Cargo.toml -p agent-room-core
 pnpm --dir tools/rightkit/packages/agent-room-mcp test
 python3 -m pytest tools/review/tests -q
-cargo fmt --manifest-path tools/roundtable/Cargo.toml --all -- --check
-cargo clippy --manifest-path tools/roundtable/Cargo.toml --workspace --all-targets -- -D warnings
-cargo test --manifest-path tools/roundtable/Cargo.toml --workspace
-pnpm --dir tools/roundtable test
-pnpm --dir tools/roundtable build
-node tools/roundtable/tests/e2e/council-roundtrip.mjs
+cargo fmt --manifest-path tools/citadel/Cargo.toml --all -- --check
+cargo clippy --manifest-path tools/citadel/Cargo.toml --workspace --all-targets -- -D warnings
+cargo test --manifest-path tools/citadel/Cargo.toml --workspace
+pnpm --dir tools/citadel test
+pnpm --dir tools/citadel build
+node tools/citadel/tests/e2e/council-roundtrip.mjs
 ```
 
 Expected final E2E line:
@@ -1208,10 +1208,10 @@ partially verified room complete.
 ### Critical Files for Implementation
 
 - `tools/rightkit/crates/agent-room-core/src/protocol.rs`
-- `tools/roundtable/crates/roundtable-node/src/council.rs`
-- `tools/roundtable/crates/roundtable-hub/src/council.rs`
-- `tools/roundtable/packages/council-mcp/src/index.ts`
-- `tools/roundtable/packages/web/src/components/CouncilRoom.tsx`
+- `tools/citadel/crates/citadel-node/src/council.rs`
+- `tools/citadel/crates/citadel-hub/src/council.rs`
+- `tools/citadel/packages/council-mcp/src/index.ts`
+- `tools/citadel/packages/web/src/components/CouncilRoom.tsx`
 
 ## Audit fold-in — rev 2026-07-19d
 

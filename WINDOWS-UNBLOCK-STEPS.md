@@ -26,7 +26,7 @@ behaviour-preserving. What remains on Windows is `#[cfg(windows)] fn spawn_liste
 
 | Handoff claim | Checked against | Verdict |
 |---|---|---|
-| `ipc.rs:16` imports `UnixListener/UnixStream` with no cfg gate | `crates/roundtable-node/src/ipc.rs:16` | Confirmed — hard Windows build failure |
+| `ipc.rs:16` imports `UnixListener/UnixStream` with no cfg gate | `crates/citadel-node/src/ipc.rs:16` | Confirmed — hard Windows build failure |
 | Only 3 platform-gated spots exist in the whole node crate | `rg 'cfg\(unix\)|cfg\(windows\)|target_os'` over `src/*.rs` | Confirmed (`ipc.rs:120`, `ipc.rs:289`, `main.rs:1`) — the rest is portable |
 | tokio ships named pipes and the crate already has what it needs | `Cargo.toml`: tokio `=1.52.3` with `net` feature; registry source has `src/net/windows/named_pipe.rs` | Confirmed — **no dependency bump needed for the transport itself** |
 | rustls provider installed before first dial; `ring` chosen deliberately | `main.rs:33-37`, `Cargo.toml` rustls comment | Confirmed — do not touch |
@@ -132,8 +132,8 @@ review the diff; do not assume.
 
 The macOS script's five jobs translate as:
 
-1. `cargo build --release -p roundtable-node`.
-2. Copy `target\release\roundtable-node.exe` to a stable path (e.g.
+1. `cargo build --release -p citadel-node`.
+2. Copy `target\release\citadel-node.exe` to a stable path (e.g.
    `%LOCALAPPDATA%\roundtable\bin\`) — never point the service at `target\`.
 3. Write `config.json` + `node.token` under `%APPDATA%\roundtable\` (or `%LOCALAPPDATA%`), then
    lock both with `icacls <file> /inheritance:r /grant:r "$env:USERNAME:(F)"` — the `chmod 600`
@@ -155,7 +155,7 @@ Exactly the handoff's recipe:
 
 1. On the box: `enrol-node.mjs node windows` and `enrol-node.mjs seat main windows win-codex codex`;
    feed `node_id` + token to the installer. Token is printed once — if lost, enrol again.
-2. Proof #1: `grep node.connected ~/.pm2/logs/roundtable-hub-out.log | tail -1` shows the Windows
+2. Proof #1: `grep node.connected ~/.pm2/logs/citadel-hub-out.log | tail -1` shows the Windows
    `node_id`.
 3. Proof #2: post `"Say exactly: WINDOWS"` at the `win-codex` seat via the store snippet in the
    handoff and read the reply back out of the production DB. **The round trip is the acceptance

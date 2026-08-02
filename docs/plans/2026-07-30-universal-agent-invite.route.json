@@ -8,17 +8,17 @@
     "description": "Roundtable has enrolled Mac/Windows nodes and room seats, but no invite capability or provider-neutral join; web asks for session catalogs the hub never returns, node never publishes catalogs, Claude join is refused, Codex starts a separate app-server, and Windows currently reports WSS 521 plus Codex initialization timeout.",
     "evidence": [
       {
-        "locator": "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/api.ts",
+        "locator": "/Volumes/D/claude/roundtable/tools/citadel/packages/web/src/api.ts",
         "sha256": "7ad2b8a7f76bb3731be1ca5189c8994f9f20daeebfdf7e99e0b4685b62a781b4",
         "check": "sessions() requests include_sessions=true."
       },
       {
-        "locator": "/Volumes/D/claude/roundtable/tools/roundtable/packages/hub/src/server.mjs",
+        "locator": "/Volumes/D/claude/roundtable/tools/citadel/packages/hub/src/server.mjs",
         "sha256": "0eaaac7cb256a28086a21b0edfe3e99c590a35912f76335c68303ebcf1985127",
         "check": "GET /api/nodes returns store.listNodes() only."
       },
       {
-        "locator": "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/main.rs",
+        "locator": "/Volumes/D/claude/roundtable/tools/citadel/crates/citadel-node/src/main.rs",
         "sha256": "d057599dc0cf2f419e4cb0c6fcc697a2a522fba8aef5a692770a801c946b1928",
         "check": "session.join and session.leave return explicit out-of-band enrollment error."
       },
@@ -33,7 +33,7 @@
     "description": "From any active room, Adrian copies one short-lived single-use invite URL, pastes it into the current Codex, Claude, or future-engine chat on an enrolled Mac/Windows node, and that exact chat joins the room without browser/admin/node secrets or a replacement agent session.",
     "proof": [
       {
-        "command": "node /Volumes/D/claude/roundtable/tools/roundtable/tests/e2e/invite-join.mjs --production --platforms mac,windows --providers codex,claude --require-current-session",
+        "command": "node /Volumes/D/claude/roundtable/tools/citadel/tests/e2e/invite-join.mjs --production --platforms mac,windows --providers codex,claude --require-current-session",
         "expected": "Exit 0 and PASS for Mac Codex current task, Windows Codex current task, Mac Claude current session, invite expiry, single use, revocation, replay refusal, no secret leakage, and no replacement child session.",
         "evidence_path": "/Volumes/D/claude/roundtable/docs/evidence/roundtable/invite-join/07-production.json"
       }
@@ -54,11 +54,11 @@
     },
     "quality": {
       "rule": "Real pasted-link acceptance must join exact current Codex/Claude sessions on Mac/Windows, survive reconnect, refuse replay/expiry/revocation, preserve room least privilege, and prove no replacement session.",
-      "evidence_locator": "/Volumes/D/claude/roundtable/2026-07-22-roundtable-cross-device-architecture.md"
+      "evidence_locator": "/Volumes/D/claude/roundtable/2026-07-22-citadel-cross-device-architecture.md"
     },
     "cost": {
       "rule": "Reuse current hub, SQLite, node, IPC, MCP, provider adapters, and PWA with zero paid calls, new hosted services, or dependencies.",
-      "evidence_locator": "/Volumes/D/claude/roundtable/tools/roundtable/Cargo.toml"
+      "evidence_locator": "/Volumes/D/claude/roundtable/tools/citadel/Cargo.toml"
     }
   },
   "candidates": [
@@ -96,7 +96,7 @@
         },
         {
           "id": "R_CAPABILITY_NODE/S4",
-          "operation": "Build one local roundtable_join_url MCP channel with provider binders that resume the exact Codex thread, bind the exact Claude channel connection, and expose a stable adapter interface for future engines.",
+          "operation": "Build one local citadel_join_url MCP channel with provider binders that resume the exact Codex thread, bind the exact Claude channel connection, and expose a stable adapter interface for future engines.",
           "depends_on": [
             "R_CAPABILITY_NODE/S3"
           ],
@@ -152,13 +152,13 @@
       "evidence": [
         "https://www.rfc-editor.org/info/rfc8628/",
         "https://modelcontextprotocol.io/specification/2025-11-25/schema",
-        "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/ipc.rs"
+        "/Volumes/D/claude/roundtable/tools/citadel/crates/citadel-node/src/ipc.rs"
       ]
     },
     {
       "id": "R_PROVIDER_SPECIFIC",
       "constraint_status": "PASS",
-      "constraint_evidence": "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/main.rs",
+      "constraint_evidence": "/Volumes/D/claude/roundtable/tools/citadel/crates/citadel-node/src/main.rs",
       "steps": [
         {
           "id": "R_PROVIDER_SPECIFIC/S1",
@@ -232,14 +232,14 @@
       "status": "REJECTED",
       "dominance_reason": "Duplicated redemption and credential surfaces increase expected rework and make future engines another full implementation.",
       "evidence": [
-        "/Volumes/D/claude/roundtable/tools/roundtable/crates/roundtable-node/src/main.rs",
-        "/Volumes/D/claude/roundtable/tools/roundtable/packages/claude-channel/src/index.ts"
+        "/Volumes/D/claude/roundtable/tools/citadel/crates/citadel-node/src/main.rs",
+        "/Volumes/D/claude/roundtable/tools/citadel/packages/claude-channel/src/index.ts"
       ]
     },
     {
       "id": "R_SESSION_CATALOG_BROWSER",
       "constraint_status": "FAIL",
-      "constraint_evidence": "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/api.ts",
+      "constraint_evidence": "/Volumes/D/claude/roundtable/tools/citadel/packages/web/src/api.ts",
       "steps": [
         {
           "id": "R_SESSION_CATALOG_BROWSER/S1",
@@ -274,8 +274,8 @@
       "status": "REJECTED",
       "dominance_reason": "Fails target constraint: it provides browser selection, not a pasted invite that binds the exact current chat.",
       "evidence": [
-        "/Volumes/D/claude/roundtable/tools/roundtable/packages/web/src/api.ts",
-        "/Volumes/D/claude/roundtable/tools/roundtable/packages/hub/src/server.mjs"
+        "/Volumes/D/claude/roundtable/tools/citadel/packages/web/src/api.ts",
+        "/Volumes/D/claude/roundtable/tools/citadel/packages/hub/src/server.mjs"
       ]
     }
   ],

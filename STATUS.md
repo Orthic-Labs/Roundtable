@@ -25,7 +25,7 @@ the agent's real reply; a message to a Claude seat reaches a connected channel o
 in ONE command again: `node --test src/*.test.mjs`. The "97 + 3" split is retired; the residual
 wedge is fixed and its cause identified. See "The test-runner hang".
 
-**`https://roundtable.spoares.com` is live** — nginx vhost built and serving, the PWA loads, and
+**`https://citadel.spoares.com` is live** — nginx vhost built and serving, the PWA loads, and
 the Mac node connects over `wss://` with no tunnel. Nothing is outstanding on deployment.
 
 ## Deployed state (2026-07-26)
@@ -36,9 +36,9 @@ the Mac node connects over `wss://` with no tunnel. Nothing is outstanding on de
 | Database | `~/.local/share/roundtable/roundtable.sqlite3` | WAL, migration guarded by `user_version` |
 | Backups | `~/backups/roundtable`, cron 04:15 daily | verified: real backup taken, contents confirmed |
 | PWA | built on the Mac, rsynced to the box | served by the hub at `/` |
-| Node (Mac) | launchd `com.orthiclabs.roundtable-node` | running, auto-starts at login |
+| Node (Mac) | launchd `com.orthiclabs.citadel-node` | running, auto-starts at login |
 | Codex | `/opt/homebrew/bin/codex app-server` | real, answering |
-| nginx vhost | built and serving `roundtable.spoares.com` | live (TLS via the spoares.com wildcard) |
+| nginx vhost | built and serving `citadel.spoares.com` | live (TLS via the spoares.com wildcard) |
 | ufw | `allow 8460/tcp from 172.16.0.0/12` | required — the container could not reach the hub without it |
 
 Enrolment is `ops/enrol-node.mjs` (node / room / seat / list) — deliberately a box-side CLI, not an
@@ -48,10 +48,10 @@ HTTP route, because it mints credentials.
 
 | Component | Tests | State |
 |---|---|---|
-| `roundtable-protocol` | 5 | real — locked v1 types, canonical JSON |
-| `roundtable-store` | 9 | real — 66KB implementation over the 11-table schema |
-| `roundtable-hub` | 24 | real — axum: auth, http, router, state, ws + 4 integration suites |
-| `roundtable-node` | 36 | real — Codex adapter against the REAL generated schema, WS client w/ reconnect, IPC, keyring |
+| `citadel-protocol` | 5 | real — locked v1 types, canonical JSON |
+| `citadel-store` | 9 | real — 66KB implementation over the 11-table schema |
+| `citadel-hub` | 24 | real — axum: auth, http, router, state, ws + 4 integration suites |
+| `citadel-node` | 36 | real — Codex adapter against the REAL generated schema, WS client w/ reconnect, IPC, keyring |
 | **cargo total** | **76** | **0 failures** |
 | `packages/hub` | **107** | green — the full run is one command again since the wedge was fixed |
 | `packages/web` | 10 | real PWA — builds (24 modules, 205KB) and serves from the hub |
@@ -199,12 +199,12 @@ with `handleNodeHandoffCreate`, which enforces the same boundary as every other 
 action: a node may only hand off FROM a seat it owns.
 
 **Two node processes on one machine = an endless supersede loop.** Hit while debugging this: a
-foreground `roundtable-node` run overlapping the launchd agent produced
+foreground `citadel-node` run overlapping the launchd agent produced
 `node.superseded` → `node.disconnected` → `node.connected` every ~2.3s forever, since each
 connection evicts the other's. The node's IPC socket also ends up stale — the file exists and
 `connect()` gets ECONNREFUSED, because the process that bound it is no longer the one that owns the
 path. Symptom to recognise: a repeating supersede triple in the hub log for ONE `node_id`. Check
-`ps aux | grep roundtable-node` before assuming a code defect; the fix is to leave exactly one
+`ps aux | grep citadel-node` before assuming a code defect; the fix is to leave exactly one
 process running.
 
 **Verified in production, 2026-07-26**, against the deployed hub over `wss://` — not in a fixture:
@@ -234,8 +234,8 @@ the node. One missing match arm; found while adding `query.result` to the same l
 
 ## Decisions
 
-- **The Rust hub (`crates/roundtable-hub`) stays, as reference only.** The Node hub is what is
-  deployed. Deleting the Rust one now would be premature: `crates/roundtable-store`'s migration IS
+- **The Rust hub (`crates/citadel-hub`) stays, as reference only.** The Node hub is what is
+  deployed. Deleting the Rust one now would be premature: `crates/citadel-store`'s migration IS
   the schema contract the Node hub loads at runtime, so that crate cannot go, and the Rust hub's 24
   integration tests encode the protocol contract the Node port is checked against. The Node hub is
   days old and this week alone found seven defects in it. Revisit after ~30 days of stable
@@ -250,7 +250,7 @@ the node. One missing match arm; found while adding `query.result` to the same l
 
 ## Absorbed branch work (branches now deleted)
 
-`main` previously tracked none of `tools/roundtable`, and the richest implementations sat on
+`main` previously tracked none of `tools/citadel`, and the richest implementations sat on
 branches. All are now in `main`:
 
 | Former branch | Carried | Disposition |
@@ -271,13 +271,13 @@ binary rather than by a passing suite.
 
 | Was broken | Fix |
 |---|---|
-| **The node binary never connected.** `main.rs` loaded config, logged `roundtable-node ready`, then ended with `let _ = (cfg, state, token); Ok(())`. `HubClient` was real and tested, but nothing constructed it — the binary reported success and did nothing. | `main.rs` now builds a transport factory and constructs `HubClient`, then drains `next_event()` for the life of the process. |
+| **The node binary never connected.** `main.rs` loaded config, logged `citadel-node ready`, then ended with `let _ = (cfg, state, token); Ok(())`. `HubClient` was real and tested, but nothing constructed it — the binary reported success and did nothing. | `main.rs` now builds a transport factory and constructs `HubClient`, then drains `next_event()` for the life of the process. |
 | **No WebSocket transport existed.** The only `HubTransport` was `TcpHubChannel` (raw TCP, NDJSON) with no tungstenite dependency, while the hub, the architecture, and nginx all assume outbound WSS. `hub_url` and the `ws://` fixture were aspirational. | `WsHubChannel` added (`tokio-tungstenite`, rustls). The factory picks WS for `ws://`/`wss://` and keeps raw TCP for a bare `host:port`, so the local fixture path still works. |
 | **The framings differed.** | Moot: the Node hub was written to the Rust node's framing — `{version, event_id, sent_at_ms, type, payload}` with a nested payload — so both now speak it. |
 
-**Verification (not a test — the actual binaries):** the real `roundtable-node` was run against a
+**Verification (not a test — the actual binaries):** the real `citadel-node` was run against a
 live Node hub with `hub_url: ws://127.0.0.1:PORT/node/connect`; the node logged
-`roundtable-node connecting` and stayed up, and the hub's own `/api/nodes` returned
+`citadel-node connecting` and stayed up, and the hub's own `/api/nodes` returned
 `{"connected":1}`.
 
 Two implementation notes worth keeping:
@@ -297,7 +297,7 @@ the gap there is now measured, not guessed at.
 
 ## Node↔Codex seat routing — CLOSED end-to-end, real content relaying (2026-07-25/26)
 
-**Proven, not asserted:** a message posted to a room reaches the real compiled `roundtable-node`
+**Proven, not asserted:** a message posted to a room reaches the real compiled `citadel-node`
 binary over a real WebSocket, drives the real `fake-codex.mjs` App Server process through a real
 turn, and the resulting reply — now the agent's real content, not a synthetic status ping — is
 persisted back in the store as an `agent`-authored message. Verified two ways — a plain repro
@@ -329,7 +329,7 @@ because each side's tests were internally self-consistent with a wrong shared as
    enum is `detached/offline/idle/running/waiting_approval/error`; fixed to default `'idle'`.
 
 None of these surfaced as a compile error or an assertion failure in isolation — each failed
-**silently**, which is itself the sixth finding: `roundtable-node`'s event-reader loop dropped any
+**silently**, which is itself the sixth finding: `citadel-node`'s event-reader loop dropped any
 undeserializable `HubEvent` via bare `.ok()`, with zero logging. Every failure above was invisible
 until a `warn!` was added at that exact point (now permanent, not diagnostic scaffolding) — this
 is why the investigation took as long as it did, and is the single highest-leverage fix in this
@@ -464,7 +464,7 @@ widened to match.
 - **`.agent/reconcile.json`**, cited by all three docs, does not exist. The real file is
   `.agent/stale.json`.
 - **`.agent/okf/*.md` is stale in both directions** and predates this absorption: it cites hub
-  source files that only now exist, and calls `roundtable-node` an "empty placeholder" when it is
+  source files that only now exist, and calls `citadel-node` an "empty placeholder" when it is
   a 1,409-line crate. Regenerate it before trusting it.
 
 ## Deployment — DONE (Task 11), except nginx
@@ -474,7 +474,7 @@ below is live and verified, not written-and-untested.
 
 | Required by spec | Reality |
 |---|---|
-| `ops/nginx-roundtable.conf` | written and STAGED on the box as `~/sites/nginx/roundtable.conf`; the Dockerfile `COPY` line and rebuild need Adrian's sudo |
+| `ops/nginx-citadel.conf` | written and STAGED on the box as `~/sites/nginx/roundtable.conf`; the Dockerfile `COPY` line and rebuild need Adrian's sudo |
 | `ops/ecosystem.config.cjs` | **live** — pm2 `citadel-hub`, `pm2 save`d, survives restart |
 | `ops/backup.sh` | **live** — cron 04:15; rewritten to use `node:sqlite`'s native `backup()` because the sqlite3 CLI is NOT installed on the box and installing it needs sudo. Verified: real backup taken, contents read back |
 | `ops/install-macos.sh` | **written and used** — builds, writes 0600 config/token, registers a launchd agent. The Mac node is running under it |
@@ -490,15 +490,15 @@ have come first.
 
 ## Node hub — in progress (2026-07-25)
 
-The port is underway at `tools/roundtable/packages/hub/`. **76 tests, 0 failures**, run with
-`node --test 'tools/roundtable/packages/hub/src/*.test.mjs'`.
+The port is underway at `tools/citadel/packages/hub/`. **76 tests, 0 failures**, run with
+`node --test 'tools/citadel/packages/hub/src/*.test.mjs'`.
 
 | Slice | State |
 |---|---|
 | `src/wire.mjs` | done — envelope matching the Rust node exactly; all 5 hub→node and 7 node→hub frames |
 | `src/store.mjs` | done — applies `0001_initial.sql` verbatim; request-dedupe contract ported |
 | `src/ws.mjs` | done — hand-rolled RFC 6455 server; text/ping/pong/close/continuation, all 3 length forms |
-| `src/auth.mjs` | done — `__Host-roundtable`, sha256, constant-time compare, origin guard |
+| `src/auth.mjs` | done — `__Host-citadel`, sha256, constant-time compare, origin guard |
 | `src/server.mjs` | **all 16 routes implemented** — rooms, seats, messages, handoffs, approvals, nodes |
 | `main.mjs` | done — smoke-tested standalone: starts, creates the WAL database, serves `/healthz`, login 200 |
 | handoff / approval / nodes handlers | done — handoff is one transaction; approvals resolve once |
@@ -537,7 +537,7 @@ For Rust, and not to be dismissed:
 
 - The hub is **written and tested** — 24 tests across auth/delivery/http/reconnect, plus a ~2,000
   line store with 9 tests. A rewrite discards that and reintroduces solved bugs.
-- **`roundtable-node` should stay Rust regardless.** It runs invisibly at login on Mac and Windows,
+- **`citadel-node` should stay Rust regardless.** It runs invisibly at login on Mac and Windows,
   wants a single binary with no runtime, and touches the OS keychain. That is Rust earning its
   keep; the hub is not.
 
@@ -552,7 +552,7 @@ crates in the lockfile. The partial build on Hetzner had already written 276M of
 toolchain, registry cache, and build artifacts permanently, and contending for 4 cores with 17 live
 services on every deploy.
 
-**Recommendation: port the hub to Node/TypeScript. Keep `roundtable-node` in Rust.**
+**Recommendation: port the hub to Node/TypeScript. Keep `citadel-node` in Rust.**
 
 An earlier revision of this file said "do not rewrite against an unsettled protocol; settle the
 wire framing first." That was wrong and is withdrawn. The framing gap is not a blocker to the
@@ -613,7 +613,7 @@ Still absent:
   rather than treating them as a fault.
 - The hub itself remains dependency-free regardless; only the PWA build needs npm.
 
-## Network exposure — `roundtable.spoares.com` is NOT behind Cloudflare Access (measured 2026-07-26)
+## Network exposure — `citadel.spoares.com` is NOT behind Cloudflare Access (measured 2026-07-26)
 
 The hub's own admin login is the only thing between the public internet and the rooms. That login
 is holding (`/api/me` → 401 unauthenticated, a wrong token → 401), but it is the sole layer.
@@ -625,7 +625,7 @@ a subdomain. Measured across the zone, unauthenticated, from outside:
 |---|---|
 | `spoares.com` | gated by CF Access |
 | `admin.spoares.com` | gated by CF Access |
-| `roundtable.spoares.com` | **not gated** — 200, serves the PWA |
+| `citadel.spoares.com` | **not gated** — 200, serves the PWA |
 | `n8n.spoares.com` | **not gated** — 200 (own login live: `/rest/login` → 401) |
 | `listmonk.spoares.com` | **not gated** — 200 (own login live: `/admin` → 307) |
 | `api.spoares.com` | not gated — 404 |
@@ -636,7 +636,7 @@ two above. The other 36 are open, and most should be (the brand sites and `store
 meant to be public). The only other internal-looking ones open are `n8n` and `listmonk`, both of
 which have their own live logins (`/rest/login` → 401, `/admin` → 307).
 
-**Root cause: `roundtable.spoares.com` has no DNS record at all.** It resolves purely through the
+**Root cause: `citadel.spoares.com` has no DNS record at all.** It resolves purely through the
 proxied `*.spoares.com` wildcard. Access applications are configured against hostnames someone
 deliberately created, so a wildcard-served host was never in any list to gate — it was invisible
 rather than overlooked. Every future subdomain served off that box inherits the same invisibility.
@@ -647,7 +647,7 @@ Unrelated but found in the same sweep: `terradireta.com` returns `000` (connecti
 site is broken, independent of Access.
 
 **Before putting Access in front of this host, read this:** both nodes dial
-`wss://roundtable.spoares.com/node/connect`. Access intercepts the WebSocket handshake and a node
+`wss://citadel.spoares.com/node/connect`. Access intercepts the WebSocket handshake and a node
 has no browser identity to satisfy it, so a blunt whole-host policy silently kills every node.
 Two workable shapes: an Access **bypass policy scoped to `/node/connect`** with Access covering the
 rest (simpler — no node code or reinstall), or an Access **service token** with the nodes sending
@@ -659,7 +659,7 @@ not for the node path.
 
 **And it must not be deleted BEFOREhand — the ordering is the whole point (asked 2026-07-26).**
 Removing the admin login is only safe once Access is verified live in front of the host. Today it
-is not: `roundtable.spoares.com` returns no Access redirect, and `/api/me` and `/api/rooms` both
+is not: `citadel.spoares.com` returns no Access redirect, and `/api/me` and `/api/rooms` both
 return 401 purely because of that login. It is currently the ONLY thing between the open internet
 and every room transcript, and the only thing stopping an anonymous visitor posting into a room.
 "The extra layer is unnecessary" is correct *after* something else authenticates, not before.
@@ -670,7 +670,7 @@ both nodes survived → only then reconsider the browser-side login. Never reord
 mutate, idempotent. It creates the `/node/connect` bypass first, probes that the path is no longer
 redirected to Access, and only then creates the host-wide app — aborting if the probe fails. The
 allow policy is cloned from whatever guards `spoares.com` rather than reinvented. Scoped to
-`roundtable.spoares.com` ONLY; `n8n`/`listmonk` keep their own credentials and `ingest` (Apple
+`citadel.spoares.com` ONLY; `n8n`/`listmonk` keep their own credentials and `ingest` (Apple
 Health) is left alone, per Adrian 2026-07-26.
 
 **`api.spoares.com` was on the gating list and was REMOVED — do not add it back.** Its bare `/` is
@@ -696,7 +696,7 @@ holds at 401.
 
 ## Next action
 
-1. Add the Access scope to `CLOUDFLARE_API_TOKEN`, then gate `roundtable.spoares.com` with a
+1. Add the Access scope to `CLOUDFLARE_API_TOKEN`, then gate `citadel.spoares.com` with a
    `/node/connect` bypass and confirm both nodes stay connected across the change. `n8n` deserves
    the same treatment first — it is workflow automation holding credentials for other services.
 2. Verify the PWA past the login screen (needs Adrian's admin token; see above).

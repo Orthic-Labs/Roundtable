@@ -10,17 +10,17 @@ audience and positioning statements come **only** from existing repository docs,
 Plain-language features derived from the verified claim inventory. Each row points back to its source.
 
 - **2026-07-14-agent-room-architecture.md** — Status: **IMPLEMENTED THROUGH P2 · DISPATCH 2 SPEC LOCKED, GATED ON CITADEL DISPATCH 1 ACCEPTANCE** · rev 2026-07-22e _(source: 2026-07-14-agent-room-architecture.md:3)_
-- **2026-07-22-roundtable-cross-device-architecture.md** — 7. A failed Task 0 Codex co-visibility gate is a hard blocker. Report the captured evidence; do not substitute a hidden CLI-only agent and call the Desktop requirement complete. _(source: 2026-07-22-roundtable-cross-device-architecture.md:39)_
-- **2026-07-25-roundtable-synthesis-three-rings.md** — status: PROPOSED (supersedes nothing until Adrian approves) _(source: 2026-07-25-roundtable-synthesis-three-rings.md:3)_
+- **2026-07-22-citadel-cross-device-architecture.md** — 7. A failed Task 0 Codex co-visibility gate is a hard blocker. Report the captured evidence; do not substitute a hidden CLI-only agent and call the Desktop requirement complete. _(source: 2026-07-22-citadel-cross-device-architecture.md:39)_
+- **2026-07-25-citadel-synthesis-three-rings.md** — status: PROPOSED (supersedes nothing until Adrian approves) _(source: 2026-07-25-citadel-synthesis-three-rings.md:3)_
 - **CHANGELOG.md** — node connected over `wss://` with no tunnel. Deployment is complete. _(source: CHANGELOG.md:12)_
 - **docs/plans/2026-07-30-universal-agent-invite.tasklist.md** — **Canonical path:** /Volumes/D/claude/roundtable/docs/plans/2026-07-30-universal-agent-invite.tasklist.md _(source: docs/plans/2026-07-30-universal-agent-invite.tasklist.md:9)_
 - **HANDOVER.md** — `github.com/Orthic-Labs/roundtable` is canonical. **Do not confuse it with _(source: HANDOVER.md:15)_
 - **README.md** — **Approval:** typed request/decision record visible in room. _(source: README.md:32)_
 - **STATUS.md** — **This file is the single source of truth for what is implemented.** Where README.md, _(source: STATUS.md:3)_
-- **SUMMARY.md** — `2026-07-22-roundtable-cross-device-architecture.md` — canonical spec (cross-device rooms, locked protocol, security contract, delivery/recovery, cancellation, Tasks 0–13). _(source: SUMMARY.md:16)_
+- **SUMMARY.md** — `2026-07-22-citadel-cross-device-architecture.md` — canonical spec (cross-device rooms, locked protocol, security contract, delivery/recovery, cancellation, Tasks 0–13). _(source: SUMMARY.md:16)_
 - **tools/agent-room/README.md** — done in real repos — over WebSocket. No git handoffs, no manual message relay. You're _(source: tools/agent-room/README.md:8)_
 - **docs/hub-spine-decision.md** — Node hub is the maintained spine; Rust hub is frozen and buildable pending bounded parity/recovery review. _(source: docs/hub-spine-decision.md:3)_
-- **tools/roundtable/fixtures/app-server/schema/README.md** — Re-run the command above whenever `codex` is upgraded and you suspect drift; diff against these _(source: tools/roundtable/fixtures/app-server/schema/README.md:37)_
+- **tools/citadel/fixtures/app-server/schema/README.md** — Re-run the command above whenever `codex` is upgraded and you suspect drift; diff against these _(source: tools/citadel/fixtures/app-server/schema/README.md:37)_
 
 ## Entry points
 

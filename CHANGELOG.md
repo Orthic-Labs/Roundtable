@@ -30,7 +30,7 @@ All notable changes to this repo. Categories follow [Keep a Changelog](https://k
   nothing called it and the package declared no `bin`, so no Claude session could load the channel
   and its tools were unreachable. Resolves the pipe path from the node's own config so the two
   cannot drift; `CITADEL_IPC_PATH` overrides for fixtures. Register with:
-  `claude mcp add --scope user citadel-channel -- node <repo>/tools/roundtable/packages/claude-channel/dist/bin.js`
+  `claude mcp add --scope user citadel-channel -- node <repo>/tools/citadel/packages/claude-channel/dist/bin.js`
 
 ## [Unreleased] — deployed, and answering from real Codex, 2026-07-26
 
@@ -38,7 +38,7 @@ Citadel is live: the hub runs on Hetzner under pm2, the Mac node runs under laun
 message posted to a room reaches a real `codex app-server` and comes back as the agent's reply.
 Verified by posting "Say exactly: THIRD" and reading `THIRD` back out of the production database.
 
-**`https://roundtable.spoares.com` is live** — nginx vhost serving the PWA and API, and the Mac
+**`https://citadel.spoares.com` is live** — nginx vhost serving the PWA and API, and the Mac
 node connected over `wss://` with no tunnel. Deployment is complete.
 
 ### Added
@@ -130,7 +130,7 @@ worse and resolved `close()` before the server had actually closed.
 
 ### Decided
 
-- **The Rust hub stays, as reference only.** `roundtable-store`'s migration is the schema contract
+- **The Rust hub stays, as reference only.** `citadel-store`'s migration is the schema contract
   the Node hub loads at runtime, and the Rust hub's 24 integration tests encode the protocol the
   Node port is checked against. The Node hub is days old and this week found seven defects in it.
   Revisit after ~30 days of stable operation.
@@ -197,12 +197,12 @@ summary of one day's work, in order.
 
 #### Decided
 
-- **Port the hub from Rust to Node/TypeScript; keep `roundtable-node` in Rust.** The hub is
+- **Port the hub from Rust to Node/TypeScript; keep `citadel-node` in Rust.** The hub is
   I/O-bound, the deploy target (Hetzner) runs Node already, and there is no viable Rust deploy
   path: no builds on the box, no hosted CI (standing workspace policy), and no cross-compile
   tooling from this arm64 Mac to the box's x86_64. The node stays Rust — a small login-time
   binary with no runtime, where Rust earns its keep.
-- **`roundtable.spoares.com`, a subdomain — not `spoares.com/roundtable`.** The path mount is
+- **`citadel.spoares.com`, a subdomain — not `spoares.com/roundtable`.** The path mount is
   operationally simpler, but same-origin would put Citadel's session cookie on the same
   trust boundary as the memory dashboard, and `Path=/roundtable` does not fix that (cookie path
   matching is by request path, not page path).
@@ -215,11 +215,11 @@ summary of one day's work, in order.
   buildable here). All 16 HTTP routes, session auth, the WebSocket upgrade and node handshake,
   rooms/seats/messages, handoffs/approvals, durable delivery dispatch with reconnect replay, and
   serving the built PWA directly.
-- **`ops/ecosystem.config.cjs`, `ops/nginx-roundtable.conf`, `ops/backup.sh`** — pm2 config, the
+- **`ops/ecosystem.config.cjs`, `ops/nginx-citadel.conf`, `ops/backup.sh`** — pm2 config, the
   nginx vhost (with its Dockerfile-COPY safety check), and a `.backup`-based SQLite backup
   script. Locally smoke-tested; none has touched Hetzner (gated behind an explicit
   `DEPLOY TASK 11`, not yet given).
-- **`CodexAdapter` response correlation and `execute()`** in `roundtable-node` — a reader-loop
+- **`CodexAdapter` response correlation and `execute()`** in `citadel-node` — a reader-loop
   task that resolves pending JSON-RPC requests and routes turn-lifecycle notifications to a
   seat, plus a new `CodexCommand::CreateThread` variant (the enum previously had no way to
   create a seat's first thread).
@@ -248,7 +248,7 @@ self-consistent with the same wrong shared assumption.
 
 Plus two bugs found along the way, both fixed permanently rather than left as scaffolding:
 
-- **Silent frame drops.** `roundtable-node`'s event-reader loop discarded any undeserializable
+- **Silent frame drops.** `citadel-node`'s event-reader loop discarded any undeserializable
   `HubEvent` via bare `.ok()`, with zero logging — the reason the five bugs above took as long
   as they did to find. Now logs the frame kind and the real serde error.
 - **A crash on disconnect.** An abrupt node disconnect (`ECONNRESET`) crashed the entire Node hub
@@ -259,13 +259,13 @@ Plus two bugs found along the way, both fixed permanently rather than left as sc
 
 - `cargo test --workspace`: 66/66 (was 62 at the start of the day).
 - The 8 stable `packages/hub` test files together: 72/72.
-- **`e2e-rust-node.test.mjs`**: the real compiled `roundtable-node` binary, a real Node hub, and
+- **`e2e-rust-node.test.mjs`**: the real compiled `citadel-node` binary, a real Node hub, and
   the real Codex fixture — a message posted in a room reaches Codex through a real turn and the
   reply is persisted back as an `agent`-authored message. 1/1 pass.
 
 #### Known limitation (closed 2026-07-26 — see the entry above)
 
-The reply that lands is a synthetic status string (`"[roundtable-node] turn Completed..."`), not
+The reply that lands is a synthetic status string (`"[citadel-node] turn Completed..."`), not
 Codex's real output. `CodexEvent::body` stays empty because App Server's actual text-delta field
 shape isn't documented anywhere available here, and guessing it would repeat the exact mistake
 this day's investigation was about. The transport and routing are proven; relaying real agent
@@ -303,13 +303,13 @@ in a batch until diagnosed.
 
 ### Added
 
-- **Architecture spec** — `2026-07-22-roundtable-cross-device-architecture.md`: the canonical cross-device design (Locked Protocol, Security Contract, Delivery/Recovery, Cancellation, Tasks 0–13). Sister spec `2026-07-14-agent-room-architecture.md` retained for context.
-- **`roundtable-protocol`** — locked v1 types: `ActorKind`, `MessageKind`, `DeliveryReason`, `DeliveryState`, `SeatProvider`, `SeatState`; `Room`, `Message`, `Seat`, `DeliveryRecord`, `Context*` records; WebSocket envelopes; canonical JSON + SHA-256 helpers; stable uuid-v7 actor identities; validation limits (message body, room, alias, handoff, page). `MessageMutation` payloads use `deny_unknown_fields`. WS upgrade enforces protocol version + rejects unknown frame types.
-- **`roundtable-store`** — dedicated SQLite actor over a single connection. WAL + `foreign_keys` + `busy_timeout`. Migration `0001_initial.sql` is the exact schema. Transactional room sequences; atomic inserts for messages, mentions, deliveries, events. Request dedupe via `(actor_id, request_id)` — same payload returns the original result; different payload returns HTTP 409 `request_id_reused`. Typed human mentions; no-wake agent prose; structured handoffs with exclusive `task_key` + depth limit 8; approvals; lease retry/dead-letter; replay cursor; bounded context construction.
-- **`roundtable-hub`** — Axum router. Two auth surfaces: admin-token (browser session) + exact-origin mutation guard. `__Host-roundtable` cookie. CSP / X-Content-Type-Options / Referrer-Policy headers. Payload size cap. Full HTTP surface: room create / list / read / message send / message get / mention / approval / handoff / cursor. Node WebSocket upgrade with protocol version + frame type rejection. Durable targeted event replay. Heartbeat pings. Node-offline seat marking.
-- **`roundtable-node`** — typed Codex App Server JSONL adapter. Hub WebSocket client with reconnect + durable cursor replay. OS-keyring secrets. Lease retry. IPC server for the Claude channel shim.
+- **Architecture spec** — `2026-07-22-citadel-cross-device-architecture.md`: the canonical cross-device design (Locked Protocol, Security Contract, Delivery/Recovery, Cancellation, Tasks 0–13). Sister spec `2026-07-14-agent-room-architecture.md` retained for context.
+- **`citadel-protocol`** — locked v1 types: `ActorKind`, `MessageKind`, `DeliveryReason`, `DeliveryState`, `SeatProvider`, `SeatState`; `Room`, `Message`, `Seat`, `DeliveryRecord`, `Context*` records; WebSocket envelopes; canonical JSON + SHA-256 helpers; stable uuid-v7 actor identities; validation limits (message body, room, alias, handoff, page). `MessageMutation` payloads use `deny_unknown_fields`. WS upgrade enforces protocol version + rejects unknown frame types.
+- **`citadel-store`** — dedicated SQLite actor over a single connection. WAL + `foreign_keys` + `busy_timeout`. Migration `0001_initial.sql` is the exact schema. Transactional room sequences; atomic inserts for messages, mentions, deliveries, events. Request dedupe via `(actor_id, request_id)` — same payload returns the original result; different payload returns HTTP 409 `request_id_reused`. Typed human mentions; no-wake agent prose; structured handoffs with exclusive `task_key` + depth limit 8; approvals; lease retry/dead-letter; replay cursor; bounded context construction.
+- **`citadel-hub`** — Axum router. Two auth surfaces: admin-token (browser session) + exact-origin mutation guard. `__Host-citadel` cookie. CSP / X-Content-Type-Options / Referrer-Policy headers. Payload size cap. Full HTTP surface: room create / list / read / message send / message get / mention / approval / handoff / cursor. Node WebSocket upgrade with protocol version + frame type rejection. Durable targeted event replay. Heartbeat pings. Node-offline seat marking.
+- **`citadel-node`** — typed Codex App Server JSONL adapter. Hub WebSocket client with reconnect + durable cursor replay. OS-keyring secrets. Lease retry. IPC server for the Claude channel shim.
 - **`packages/web` (PWA)** — Vite + React + TypeScript. Composer, RoomList, RoomView, MessageList, SeatPanel, Login. IndexedDB offline queue. Service worker. Manifest.
-- **`packages/claude-channel`** — MCP server with 7 roundtable_* tools (`roundtable_join`, `roundtable_leave`, `roundtable_read`, `roundtable_search`, `roundtable_reply`, `roundtable_handoff`, `roundtable_approval`). Zod schemas mirror the Rust protocol types. IPC client opens the node's IPC socket.
+- **`packages/claude-channel`** — MCP server with Citadel tools (`citadel_session_join`, `citadel_join`, `citadel_leave`, `citadel_read`, `citadel_search`, `citadel_reply`, `citadel_handoff`, `citadel_delegate`, `citadel_approval`). Zod schemas mirror the Rust protocol types. IPC client opens the node's IPC socket.
 - **`fixtures/`** — `fake-hub.mjs` (TCP NDJSON) and `fake-codex.mjs` (stdio JSON-RPC) for roundtrip testing.
 - **Generated docs** — `docs/product.md`, `docs/architecture.md` (Blueprint-generated, code-grounded).
 - **`README.md`** — repo landing page; architecture + tests + spec debt pointers.
@@ -319,10 +319,10 @@ in a batch until diagnosed.
 
 ### Tests
 
-- `roundtable-protocol`: 5/5
-- `roundtable-store`: 9/9
-- `roundtable-hub`: 24/24 (auth, delivery, http, reconnect)
-- `roundtable-node`: 24/24 (ipc, reconnect, codex_contract)
+- `citadel-protocol`: 5/5
+- `citadel-store`: 9/9
+- `citadel-hub`: 24/24 (auth, delivery, http, reconnect)
+- `citadel-node`: 24/24 (ipc, reconnect, codex_contract)
 - `packages/web`: 10/10
 - `packages/claude-channel`: tsx test pass
 
@@ -336,12 +336,12 @@ Each item below is verified against the spec as not yet implemented; tracked in 
 - `MessageKind::SeatInterrupt` + interrupt handler
 - `ApprovalResolution::AfterCancel` + cancel-while-waiting-approval flow
 - `DeliveryRecord.no_rollback` enforcement
-- `tools/roundtable/ops/observability.md` (log field schema, sampling, on-call runbook)
+- `tools/citadel/ops/observability.md` (log field schema, sampling, on-call runbook)
 
 ### Known limits
 
 - **End-to-end (Task 12) deferred.** Real Codex-attach + scripted roundtrip is the next engineering block.
-- **Hetzner deployment (Task 11) deferred.** `docker-compose`, `nginx-roundtable.conf`, `install-macos.sh` / `install-windows.ps1`, `backup.sh` are scoped by the architecture but not generated.
+- **Hetzner deployment (Task 11) deferred.** `docker-compose`, `nginx-citadel.conf`, `install-macos.sh` / `install-windows.ps1`, `backup.sh` are scoped by the architecture but not generated.
 - **OKF emission deferred.** `skill-emit blueprint` requires out-of-sandbox execution; the artifacts are present locally in `.agent/`.
 
 ### Push history (verified — all five are ancestors of `main`)

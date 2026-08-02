@@ -6,7 +6,7 @@ Technical overview of components, interfaces, classified flow inventory, and cap
 The deterministic Phase-1 graph supplies the evidence substrate; Phase-2 understanding supplies
 the human component names and operational flow. Raw file and symbol nodes are intentionally omitted.
 
-Citadel is a three-component system: a Rust node daemon (`roundtable-node`) that runs on the operator's Mac/Windows machine and proxies one or more LLM codex/Claude/minimax sessions per assigned seat; a Node.js hub (`packages/hub`) that runs server-side on the vendure box under nginx and is the only authoritative store of rooms, seats, deliveries, approvals, durable runs, events, and the operator sessions; and a Vite-built React PWA (`packages/web`) that talks to the hub over HTTPS+WebSocket. The node connects outbound to the hub over WebSocket (wss) at `/node/connect` (NDJSON envelope with the legacy `{version,event_id,sent_at_ms,type,payload}` shape — distinct from `roundtable_protocol::WsEnvelope`, a known divergence), the hub's SQLite store is the system-of-record under WAL (`crates/roundtable-store/migrations/0001_initial.sql` applied at `user_version=1`, `0002_task_runs.sql` at `user_version=2`), and the PWA is served by the hub itself from `packages/web/dist` via static fallback. The Node hub is the only maintained spine; the Rust `roundtable-hub` crate is frozen but buildable per `docs/hub-spine-decision.md`. `tools/agent-room/` remains retained because P1-12 retirement is deferred pending documented parity plus Adrian approval. The `universal-agent-invite` tasklist targets (provider-session-probe, invites.test, join-channel, InviteAgent.test, invite-join) reference files that do not exist on disk.
+Citadel is a three-component system: a Rust node daemon (`citadel-node`) that runs on the operator's Mac/Windows machine and proxies one or more LLM codex/Claude/minimax sessions per assigned seat; a Node.js hub (`packages/hub`) that runs server-side on the vendure box under nginx and is the only authoritative store of rooms, seats, deliveries, approvals, durable runs, events, and the operator sessions; and a Vite-built React PWA (`packages/web`) that talks to the hub over HTTPS+WebSocket. The node connects outbound to the hub over WebSocket (wss) at `/node/connect` (NDJSON envelope with the legacy `{version,event_id,sent_at_ms,type,payload}` shape — distinct from `citadel_protocol::WsEnvelope`, a known divergence), the hub's SQLite store is the system-of-record under WAL (`crates/citadel-store/migrations/0001_initial.sql` applied at `user_version=1`, `0002_task_runs.sql` at `user_version=2`), and the PWA is served by the hub itself from `packages/web/dist` via static fallback. The Node hub is the only maintained spine; the Rust `citadel-hub` crate is frozen but buildable per `docs/hub-spine-decision.md`. `tools/agent-room/` remains retained because P1-12 retirement is deferred pending documented parity plus Adrian approval. The `universal-agent-invite` tasklist targets (provider-session-probe, invites.test, join-channel, InviteAgent.test, invite-join) reference files that do not exist on disk.
 
 ## System workflow
 
@@ -14,7 +14,7 @@ Citadel is a three-component system: a Rust node daemon (`roundtable-node`) that
 flowchart LR
   %% component workflow from .agent/understanding.json
   c0["Operator opens https"]
-  c1["nginx (roundtable.spoares.com)"]
+  c1["nginx (citadel.spoares.com)"]
   c2["hub / (Cache-Control"]
   c3["hub serves packages/web/dist/index.html (SPA)"]
   c4["web/api fetches cookie session"]
@@ -103,54 +103,54 @@ _(source: .agent/understanding.json:architecture.dataFlow)_
 
 ## Components
 
-- **node/main** _(source: tools/roundtable/crates/roundtable-node/src/main.rs:30-148)_
-- **node/hub** _(source: tools/roundtable/crates/roundtable-node/src/hub.rs:42-52,162-294,329-494)_
-- **node/ipc** _(source: tools/roundtable/crates/roundtable-node/src/ipc.rs:47-108,164-244,331-399)_
-- **node/codex** _(source: tools/roundtable/crates/roundtable-node/src/codex.rs:1-85; verbatim thread_params from `fixtures/app-server/schema/README.md`)_
-- **node/state** _(source: tools/roundtable/crates/roundtable-node/src/state.rs:62-309)_
-- **node/config** _(source: tools/roundtable/crates/roundtable-node/src/config.rs:21-31)_
-- **node/secrets** _(source: tools/roundtable/crates/roundtable-node/src/secrets.rs:9-37)_
-- **protocol/lib** _(source: tools/roundtable/crates/roundtable-protocol/src/lib.rs:8-16,200-205,508-512)_
-- **store/lib** _(source: tools/roundtable/crates/roundtable-store/src/lib.rs:272-481; Cargo.toml workspace dep `rusqlite = { version = "0.40.1", features = ["bundled"] }`)_
-- **store/migrations** _(source: tools/roundtable/crates/roundtable-store/migrations/0001_initial.sql; packages/hub/src/store.mjs:21-91)_
-- **hub/main** _(source: tools/roundtable/packages/hub/main.mjs:16-79)_
-- **hub/server** _(source: tools/roundtable/packages/hub/src/server.mjs:51-180,621-1109)_
-- **hub/store** _(source: tools/roundtable/packages/hub/src/store.mjs:40-92,110-125,605-642,658-)_
-- **hub/wire** _(source: tools/roundtable/packages/hub/src/wire.mjs:15-131)_
-- **hub/ws** _(source: tools/roundtable/packages/hub/src/ws.mjs:41-240)_
-- **hub/auth** _(source: tools/roundtable/packages/hub/src/auth.mjs:10-69)_
-- **hub/access-jwt** _(source: tools/roundtable/packages/hub/src/access-jwt.mjs (referenced from server.mjs:8 and ecosystem.config.cjs:53-55))_
-- **hub/dto** _(source: tools/roundtable/packages/hub/src/dto.mjs (imported by server.mjs:15-19))_
-- **hub/transitions** _(source: tools/roundtable/packages/hub/src/transitions.mjs (imported by store.mjs:19))_
-- **hub/operator-events** _(source: tools/roundtable/packages/hub/src/operator-events.mjs (imported by server.mjs:20))_
-- **hub/log** _(source: tools/roundtable/ops/observability.md:11-63; packages/hub/src/log.mjs)_
-- **web/main** _(source: tools/roundtable/packages/web/src/main.tsx:1-12)_
-- **web/api** _(source: tools/roundtable/packages/web/src/api.ts:9-93)_
-- **web/components** _(source: tools/roundtable/packages/web/src/components/; .gitignore'd by `ErrorBoundary.tsx` (per git ls-files status))_
-- **claude-channel** _(source: tools/roundtable/packages/claude-channel/src/{index.ts,ipc.ts,schemas.ts}; node/ipc.rs:45-108)_
-- **ops/enrol-node** _(source: tools/roundtable/ops/enrol-node.mjs:1-77)_
-- **ops/install-macos** _(source: tools/roundtable/ops/install-macos.sh:64-122)_
-- **ops/install-windows** _(source: tools/roundtable/ops/install-windows.ps1:1-69)_
-- **ops/ecosystem** _(source: tools/roundtable/ops/ecosystem.config.cjs:21-60)_
-- **ops/nginx** _(source: tools/roundtable/ops/nginx-roundtable.conf:36-118)_
+- **node/main** _(source: tools/citadel/crates/citadel-node/src/main.rs:30-148)_
+- **node/hub** _(source: tools/citadel/crates/citadel-node/src/hub.rs:42-52,162-294,329-494)_
+- **node/ipc** _(source: tools/citadel/crates/citadel-node/src/ipc.rs:47-108,164-244,331-399)_
+- **node/codex** _(source: tools/citadel/crates/citadel-node/src/codex.rs:1-85; verbatim thread_params from `fixtures/app-server/schema/README.md`)_
+- **node/state** _(source: tools/citadel/crates/citadel-node/src/state.rs:62-309)_
+- **node/config** _(source: tools/citadel/crates/citadel-node/src/config.rs:21-31)_
+- **node/secrets** _(source: tools/citadel/crates/citadel-node/src/secrets.rs:9-37)_
+- **protocol/lib** _(source: tools/citadel/crates/citadel-protocol/src/lib.rs:8-16,200-205,508-512)_
+- **store/lib** _(source: tools/citadel/crates/citadel-store/src/lib.rs:272-481; Cargo.toml workspace dep `rusqlite = { version = "0.40.1", features = ["bundled"] }`)_
+- **store/migrations** _(source: tools/citadel/crates/citadel-store/migrations/0001_initial.sql; packages/hub/src/store.mjs:21-91)_
+- **hub/main** _(source: tools/citadel/packages/hub/main.mjs:16-79)_
+- **hub/server** _(source: tools/citadel/packages/hub/src/server.mjs:51-180,621-1109)_
+- **hub/store** _(source: tools/citadel/packages/hub/src/store.mjs:40-92,110-125,605-642,658-)_
+- **hub/wire** _(source: tools/citadel/packages/hub/src/wire.mjs:15-131)_
+- **hub/ws** _(source: tools/citadel/packages/hub/src/ws.mjs:41-240)_
+- **hub/auth** _(source: tools/citadel/packages/hub/src/auth.mjs:10-69)_
+- **hub/access-jwt** _(source: tools/citadel/packages/hub/src/access-jwt.mjs (referenced from server.mjs:8 and ecosystem.config.cjs:53-55))_
+- **hub/dto** _(source: tools/citadel/packages/hub/src/dto.mjs (imported by server.mjs:15-19))_
+- **hub/transitions** _(source: tools/citadel/packages/hub/src/transitions.mjs (imported by store.mjs:19))_
+- **hub/operator-events** _(source: tools/citadel/packages/hub/src/operator-events.mjs (imported by server.mjs:20))_
+- **hub/log** _(source: tools/citadel/ops/observability.md:11-63; packages/hub/src/log.mjs)_
+- **web/main** _(source: tools/citadel/packages/web/src/main.tsx:1-12)_
+- **web/api** _(source: tools/citadel/packages/web/src/api.ts:9-93)_
+- **web/components** _(source: tools/citadel/packages/web/src/components/; .gitignore'd by `ErrorBoundary.tsx` (per git ls-files status))_
+- **claude-channel** _(source: tools/citadel/packages/claude-channel/src/{index.ts,ipc.ts,schemas.ts}; node/ipc.rs:45-108)_
+- **ops/enrol-node** _(source: tools/citadel/ops/enrol-node.mjs:1-77)_
+- **ops/install-macos** _(source: tools/citadel/ops/install-macos.sh:64-122)_
+- **ops/install-windows** _(source: tools/citadel/ops/install-windows.ps1:1-69)_
+- **ops/ecosystem** _(source: tools/citadel/ops/ecosystem.config.cjs:21-60)_
+- **ops/nginx** _(source: tools/citadel/ops/nginx-citadel.conf:36-118)_
 
 ## Flow inventory
 
 | Flow | Status | Evidence | Impact |
 |---|---|---|---|
-| provider hello + supersede | undetermined | tools/roundtable/packages/hub/src/server.mjs:622-644 |  |
-| operator dispatch | undetermined | tools/roundtable/packages/hub/src/server.mjs:1043-1109 |  |
-| approval resolve after cancel | undetermined | tools/roundtable/packages/hub/src/store.mjs:613-650 |  |
+| provider hello + supersede | undetermined | tools/citadel/packages/hub/src/server.mjs:622-644 |  |
+| operator dispatch | undetermined | tools/citadel/packages/hub/src/server.mjs:1043-1109 |  |
+| approval resolve after cancel | undetermined | tools/citadel/packages/hub/src/store.mjs:613-650 |  |
 | agent-room dispatch 2 / council seating | undetermined | Undetermined |  |
 | universal-agent-invite (provider-session-probe, invites.test, invite_join, join-channel, InviteAgent.test, invite-join e2e) | undetermined | Undetermined |  |
-| Claude seat reply via MCP channel | undetermined | tools/roundtable/crates/roundtable-node/src/main.rs:306-345; tools/roundtable/crates/roundtable-node/src/ipc.rs:331-399; tools/roundtable/packages/hub/src/server.mjs:850-880 |  |
-| node reconnect on resume_cursor | undetermined | tools/roundtable/crates/roundtable-node/src/state.rs:122-129; tools/roundtable/packages/hub/src/server.mjs:660-674 |  |
-| codex app-server turn start | undetermined | tools/roundtable/crates/roundtable-node/src/main.rs:479-506; tools/roundtable/crates/roundtable-node/src/main.rs:518-638 |  |
-| guardian approval (denied) | undetermined | tools/roundtable/crates/roundtable-node/src/main.rs:563-604; tools/roundtable/packages/hub/src/server.mjs:939-966 |  |
-| node→hub query (transcript/search/roster) | undetermined | tools/roundtable/crates/roundtable-node/src/main.rs:445-465; tools/roundtable/packages/hub/src/server.mjs:790-841 |  |
-| node durable outbox (citadel 6.7) | undetermined | tools/roundtable/crates/roundtable-node/src/state.rs:225-261; tools/roundtable/packages/hub/src/server.mjs:719-1016; tools/roundtable/packages/hub/src/wire.mjs:34-40 |  |
-| full hub shutdown (graceful) | undetermined | tools/roundtable/packages/hub/main.mjs:73-79; tools/roundtable/packages/hub/src/server.mjs:1153-1165 |  |
-| ws+rpc reconciler (cancelDelivery) | undetermined | tools/roundtable/packages/hub/src/store.mjs:644-742 |  |
+| Claude seat reply via MCP channel | undetermined | tools/citadel/crates/citadel-node/src/main.rs:306-345; tools/citadel/crates/citadel-node/src/ipc.rs:331-399; tools/citadel/packages/hub/src/server.mjs:850-880 |  |
+| node reconnect on resume_cursor | undetermined | tools/citadel/crates/citadel-node/src/state.rs:122-129; tools/citadel/packages/hub/src/server.mjs:660-674 |  |
+| codex app-server turn start | undetermined | tools/citadel/crates/citadel-node/src/main.rs:479-506; tools/citadel/crates/citadel-node/src/main.rs:518-638 |  |
+| guardian approval (denied) | undetermined | tools/citadel/crates/citadel-node/src/main.rs:563-604; tools/citadel/packages/hub/src/server.mjs:939-966 |  |
+| node→hub query (transcript/search/roster) | undetermined | tools/citadel/crates/citadel-node/src/main.rs:445-465; tools/citadel/packages/hub/src/server.mjs:790-841 |  |
+| node durable outbox (citadel 6.7) | undetermined | tools/citadel/crates/citadel-node/src/state.rs:225-261; tools/citadel/packages/hub/src/server.mjs:719-1016; tools/citadel/packages/hub/src/wire.mjs:34-40 |  |
+| full hub shutdown (graceful) | undetermined | tools/citadel/packages/hub/main.mjs:73-79; tools/citadel/packages/hub/src/server.mjs:1153-1165 |  |
+| ws+rpc reconciler (cancelDelivery) | undetermined | tools/citadel/packages/hub/src/store.mjs:644-742 |  |
 
 ## Capability coverage
 

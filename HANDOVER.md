@@ -8,7 +8,7 @@ orientation layer on top of it.
 Cross-device rooms for existing local Claude/Codex sessions. A hub on Hetzner owns rooms,
 transcripts, delivery, and auth; a small node runs at login on each machine (Mac/Windows) and
 dials the hub outbound over WSS. Full product spec:
-`2026-07-22-roundtable-cross-device-architecture.md`.
+`2026-07-22-citadel-cross-device-architecture.md`.
 
 ## Repository — read this before touching anything
 
@@ -21,11 +21,11 @@ doesn't say `Orthic-Labs/roundtable`, stop and fix that first.
 ## It is live
 
 ```
-URL    https://roundtable.spoares.com  (PWA + API + wss node endpoint)
+URL    https://citadel.spoares.com  (PWA + API + wss node endpoint)
 Hub    Hetzner, pm2 `citadel-hub`, 0.0.0.0:8460, pm2 save'd
 DB     ~/.local/share/roundtable/roundtable.sqlite3 (WAL)
 Backup ~/backups/roundtable, cron 04:15, node:sqlite backup() + integrity_check
-Node   this Mac, launchd com.orthiclabs.roundtable-node, starts at login
+Node   this Mac, launchd com.orthiclabs.citadel-node, starts at login
 Codex  /opt/homebrew/bin/codex app-server — real, answering
 ```
 
@@ -67,19 +67,19 @@ ops/ecosystem.config.cjs`, then `pm2 save`.
 
 ```bash
 # enrol things (box-side CLI — deliberately NOT an HTTP route, it mints credentials)
-ssh vendure 'node ~/sites/citadel/tools/roundtable/ops/enrol-node.mjs list'
-ssh vendure 'node ~/sites/citadel/tools/roundtable/ops/enrol-node.mjs node <name>'
-ssh vendure 'node ~/sites/citadel/tools/roundtable/ops/enrol-node.mjs seat <room> <node> <alias> codex'
+ssh vendure 'node ~/sites/citadel/tools/citadel/ops/enrol-node.mjs list'
+ssh vendure 'node ~/sites/citadel/tools/citadel/ops/enrol-node.mjs node <name>'
+ssh vendure 'node ~/sites/citadel/tools/citadel/ops/enrol-node.mjs seat <room> <node> <alias> codex'
 
 # deploy the hub
 ssh vendure 'cd ~/sites/citadel && git pull --ff-only origin main && pm2 restart citadel-hub'
 
 # the Mac node
-launchctl print gui/$(id -u)/com.orthiclabs.roundtable-node | grep state
+launchctl print gui/$(id -u)/com.orthiclabs.citadel-node | grep state
 tail -f ~/Library/Logs/roundtable/node.out.log
 ```
 
-On-call runbook and the log field schema: `tools/roundtable/ops/observability.md`.
+On-call runbook and the log field schema: `tools/citadel/ops/observability.md`.
 
 ## What is NOT done
 
@@ -89,7 +89,7 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
   2026-07-26 via the `node.query`/`query.result` frame pair (see STATUS.md, "The node read path").
   Still unimplemented over IPC: `approval.verdict` and `session.join/leave` — each returns an
   explicit error, not a fake success.
-- **Windows** — never built or run, and `roundtable-node` still does not COMPILE there, but the
+- **Windows** — never built or run, and `citadel-node` still does not COMPILE there, but the
   gap is now one function: `ipc.rs` was refactored on 2026-07-26 so the platform seam is a single
   `#[cfg(unix)] spawn_listener`, with `handle_connection` already generic over the transport. What
   remains is the Windows arm plus its owner-only pipe DACL. Full brief:
@@ -123,13 +123,13 @@ On-call runbook and the log field schema: `tools/roundtable/ops/observability.md
    and no cross-compile tooling from this arm64 Mac to the box's x86_64 (`zig`/`cross`/`docker` all
    absent). The Rust node stays Rust — it's a small login-time binary with no runtime, which is
    exactly where Rust earns its keep.
-2. **`roundtable.spoares.com`, a subdomain — not `spoares.com/roundtable`.** Adrian correctly
+2. **`citadel.spoares.com`, a subdomain — not `spoares.com/roundtable`.** Adrian correctly
    pointed out the path mount is *operationally simpler* (one line in an already-COPY'd conf, vs a
    new conf + a new Dockerfile COPY line — and a missing-COPY has bitten this box before). Rejected
    anyway on ONE axis: shared origin = shared trust boundary. Citadel's session cookie would be
    sent to the memory dashboard too, and `Path=/roundtable` does NOT fix this — cookie path
    matching is by request path, not page path. Full reasoning is in
-   `ops/nginx-roundtable.conf`'s header comment; read it before changing this.
+   `ops/nginx-citadel.conf`'s header comment; read it before changing this.
 3. **No builds and no CI on Hetzner, at all.** Was violated once by accident early in this session
    (a Rust toolchain got installed on the live box and a release build started) — caught,
    toolchain and build artifacts removed, box unaffected. Don't repeat it. The whole point of the

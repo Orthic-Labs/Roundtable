@@ -40,7 +40,7 @@ _mockups/
 .pnpm-store/
 
 # PWA build output and installed deps (built on demand with npm + vite)
-tools/roundtable/packages/web/dist/
+tools/citadel/packages/web/dist/
 
 # Credentials. The node falls back to ./node.token in its working directory when
 # ROUNDTABLE_NODE_TOKEN_FILE is unset, so running it from a checkout drops a real
