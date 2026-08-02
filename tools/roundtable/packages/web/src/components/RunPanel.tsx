@@ -56,7 +56,8 @@ function RunCard({
   inspection?: RunInspection;
   seats: Seat[];
 }) {
-  const [expanded, setExpanded] = useState(true);
+  // Live runs open; finished runs collapse to a summary row until asked for.
+  const [expanded, setExpanded] = useState(!['completed', 'failed', 'cancelled'].includes(run.state));
   const executor = seats.find((s) => s.id === run.executor_seat_id)?.alias ?? run.executor_seat_id;
   const unobservable = UNOBSERVABLE[run.observability_grade] ?? UNOBSERVABLE.partial;
   const timeline = [...events].sort((a, b) => a.seq - b.seq);
@@ -75,28 +76,29 @@ function RunCard({
         </small>
       </header>
 
-      <div className={`observability grade-${run.observability_grade}`} role="status">
-        <strong>{run.observability_grade} observability</strong>
-        {unobservable.length > 0 ? (
-          <p>
-            Unobservable on this harness:{' '}
-            {unobservable.map((ch) => (
-              <span key={ch} className="unobservable-channel">{ch}</span>
-            ))}
-          </p>
-        ) : (
-          <p>Full event stream available for this run.</p>
-        )}
-      </div>
-
       {expanded && (
         <div className="run-inspector">
+          <div className={`observability grade-${run.observability_grade}`} role="status">
+            <strong>{run.observability_grade} observability</strong>
+            {unobservable.length > 0 ? (
+              <p>
+                Unobservable on this harness:{' '}
+                {unobservable.map((ch) => (
+                  <span key={ch} className="unobservable-channel">{ch}</span>
+                ))}
+              </p>
+            ) : (
+              <p>Full event stream available for this run.</p>
+            )}
+          </div>
           {task?.instructions && (
             <details className="run-packet">
               <summary>Work packet</summary>
               <pre>{task.instructions}</pre>
             </details>
           )}
+          <details className="run-detail">
+          <summary>Inspector</summary>
           <section className="run-observable-details" aria-label="Terminal and files">
             <h3>Terminal &amp; files</h3>
             {unobservable.some((channel) => channel === 'terminal' || channel === 'files')
@@ -115,6 +117,7 @@ function RunCard({
             {inspection ? <p className="muted">{inspection.lineage.delegated_from_seat_id ? `Delegated from ${inspection.lineage.delegated_from_seat_id}` : 'Operator-created'} → {inspection.lineage.executor_seat_id}</p>
               : <p className="muted">Lineage unavailable until this run is refreshed.</p>}
           </section>
+          </details>
           <h3>Timeline</h3>
           {timeline.length === 0 ? (
             <p className="muted">No run events yet.</p>

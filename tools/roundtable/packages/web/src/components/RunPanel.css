@@ -24,3 +24,5 @@
 .task-form textarea,.task-form select{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:7px;background:var(--deep);color:var(--text)}
 .task-form textarea{min-height:70px}
 .run .error{color:var(--bad)}
+.run-detail summary{cursor:pointer;font-size:12px;color:var(--muted)}
+.run-detail[open]{display:grid;gap:8px}

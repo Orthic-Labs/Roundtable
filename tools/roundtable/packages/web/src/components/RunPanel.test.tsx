@@ -1,8 +1,9 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { expect, it } from 'vitest';
 import { RunPanel } from './RunPanel';
 
-it('renders timeline, explicit unavailable channels, artifacts, and delegation lineage', () => {
+it('renders timeline, explicit unavailable channels, artifacts, and delegation lineage', async () => {
   render(<RunPanel
     tasks={[{ id: 'task', room_id: 'room', executor_seat_id: 'seat', title: 'Inspect', instructions: 'Read state.', state: 'queued', created_at_ms: 1, updated_at_ms: 1 }]}
     runs={[{ id: 'run', task_id: 'task', room_id: 'room', executor_seat_id: 'seat', delivery_id: 'delivery', state: 'queued', observability_grade: 'partial' }]}
@@ -13,6 +14,7 @@ it('renders timeline, explicit unavailable channels, artifacts, and delegation l
     onCreate={async () => {}}
   />);
   expect(screen.getByText('Timeline')).toBeVisible();
+  await userEvent.click(screen.getByText('Inspector'));
   expect(screen.getByText('Not observable on this harness.')).toBeVisible();
   expect(screen.getByText('report: /tmp/report.json')).toBeVisible();
   expect(screen.getByText('Delegated from seat-a → seat')).toBeVisible();
