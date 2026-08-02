@@ -1,6 +1,6 @@
 // SQLite store for the Node hub.
 //
-// Uses the SAME migration the Rust store uses — crates/roundtable-store/migrations/0001_initial.sql
+// Uses the SAME migration the Rust store uses — crates/citadel-store/migrations/0001_initial.sql
 // is the schema contract and is applied here verbatim. Verified 2026-07-25: it loads under
 // node:sqlite with no modification (11 tables, 3 indexes).
 //
@@ -20,10 +20,10 @@ import { assertDeliveryTransition, canTransitionDelivery } from './transitions.m
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const MIGRATION_PATH = resolve(
-  HERE, '../../../crates/roundtable-store/migrations/0001_initial.sql',
+  HERE, '../../../crates/citadel-store/migrations/0001_initial.sql',
 );
 export const TASK_RUN_MIGRATION_PATH = resolve(
-  HERE, '../../../crates/roundtable-store/migrations/0002_task_runs.sql',
+  HERE, '../../../crates/citadel-store/migrations/0002_task_runs.sql',
 );
 
 export class StoreError extends Error {}
@@ -390,9 +390,22 @@ export class Store {
       const room = this.getRoom(row.room_id);
       if (!room || room.archived_at_ms) throw new StoreError('unknown_room');
 
-      const seat = this.createSeat({
-        roomId: row.room_id, nodeId, alias, provider, sessionRef, state: 'idle',
-      });
+      // Resume, not create, when a detached seat on the SAME node already holds the alias —
+      // otherwise a node restart (which detaches its seats' sessions) makes the alias
+      // permanently unclaimable: every rejoin dies with alias_taken against its own ghost.
+      // A live seat or another node's seat still refuses: that is a real conflict.
+      const existing = this.seatByAlias(row.room_id, alias);
+      let seat;
+      if (existing && existing.node_id === nodeId && existing.state === 'detached') {
+        this.#db
+          .prepare('UPDATE seats SET provider = ?, session_ref = ?, state = ?, last_seen_ms = ? WHERE id = ?')
+          .run(provider, sessionRef, 'idle', Date.now(), existing.id);
+        seat = this.getSeat(existing.id);
+      } else {
+        seat = this.createSeat({
+          roomId: row.room_id, nodeId, alias, provider, sessionRef, state: 'idle',
+        });
+      }
       this.#db
         .prepare('UPDATE invites SET redeemed_at_ms = ?, redeemed_seat_id = ? WHERE id = ?')
         .run(Date.now(), seat.id, row.id);

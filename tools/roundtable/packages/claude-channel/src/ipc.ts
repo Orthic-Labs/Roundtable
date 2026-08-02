@@ -24,6 +24,16 @@ export class IpcClient {
       sock.setEncoding("utf8");
       sock.once("connect", () => { this.socket = sock; this.attach(); resolve(); });
       sock.once("error", (err) => reject(err));
+      // The node restarts on every reinstall/update; without this the dead socket stayed set,
+      // every later request wrote into the void, and the whole channel was down until the MCP
+      // process itself was restarted. Clearing it makes the next request() redial the pipe.
+      sock.once("close", () => {
+        if (this.socket !== sock) return;
+        this.socket = null; this.buf = "";
+        // Arrival-order correlation must not straddle a reconnect: a stale waiter would pair
+        // with the first reply of the NEW connection. Everyone in flight loses their socket.
+        this.waiters.splice(0).forEach((w) => w({ request_id: "", ok: false, payload: null, error: "ipc connection closed" }));
+      });
     });
   }
 

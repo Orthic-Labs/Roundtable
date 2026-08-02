@@ -72,6 +72,11 @@ pub struct NodeState {
     pub outbox: HashMap<Uuid, OutboxRecord>,
     pub deliveries: HashMap<Uuid, DeliveryRecord>,
     pub completed_deliveries: HashMap<Uuid, i64>,
+    /// seat_id -> room_id for seats this node redeemed via invite. Without this a node restart
+    /// orphaned every invited seat: register_seat/routing.rooms were memory-only, so the seat
+    /// still existed on the hub but the node refused to post for it ("does not own that seat").
+    #[serde(default)]
+    pub redeemed_seats: HashMap<Uuid, Uuid>,
 }
 
 impl Default for NodeState {
@@ -83,6 +88,7 @@ impl Default for NodeState {
             outbox: HashMap::new(),
             deliveries: HashMap::new(),
             completed_deliveries: HashMap::new(),
+            redeemed_seats: HashMap::new(),
         }
     }
 }

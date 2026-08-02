@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         });
 
-    let client = HubClient::new(cfg.clone(), token.expose().to_string(), state, factory);
+    let client = HubClient::new(cfg.clone(), token.expose().to_string(), state.clone(), factory);
     tracing::info!(node_id = %cfg.node_id, hub = %cfg.hub_url, "citadel-node connecting");
 
     // One CodexAdapter for the process. connect() needs &mut self and is only called here, once,
@@ -101,6 +101,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // recorded here and looked up when a reply needs to be posted, rather than threading a
     // Roundtable-specific field through an otherwise protocol-agnostic module.
     let routing = Arc::new(SeatRouting::default());
+
+    // Re-own seats redeemed in earlier runs: without this a restart orphaned every invited seat
+    // (hub still lists it; the node answers "does not own that seat" to its own channel).
+    {
+        let st = state.lock().await;
+        for (&seat_id, &room_id) in &st.redeemed_seats {
+            client.register_seat(seat_id).await;
+            routing.rooms.lock().await.insert(seat_id, room_id);
+        }
+        if !st.redeemed_seats.is_empty() {
+            tracing::info!(count = st.redeemed_seats.len(), "restored redeemed seat bindings");
+        }
+    }
 
     // The local IPC socket is how a Claude session joins a room: `packages/claude-channel` (an MCP
     // server running inside that session) connects here. Without it, Claude seats receive nothing
@@ -129,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::warn!("ipc request channel closed");
                     continue;
                 };
-                let response = handle_ipc_request(req, &client, &routing).await;
+                let response = handle_ipc_request(req, &client, &routing, &state, &cfg.state_path).await;
                 let _ = respond.send(response);
             }
             codex_event = codex_events.recv() => {
@@ -312,6 +325,8 @@ async fn handle_ipc_request(
     req: IpcRequest,
     client: &HubClient,
     routing: &Arc<SeatRouting>,
+    state: &Arc<Mutex<NodeState>>,
+    state_path: &std::path::Path,
 ) -> IpcResponse {
     let id = Uuid::now_v7();
     match req {
@@ -336,13 +351,16 @@ async fn handle_ipc_request(
             match rx.await {
                 Ok(Ok(message_id)) => {
                     // The delivery is done the moment its reply lands; leaving it open would keep
-                    // the lease alive and eventually retry work already completed.
-                    routing.deliveries.lock().await.remove(&seat_id);
-                    client.send(ClientCommand::DeliveryState {
-                        delivery_id,
-                        state: DeliveryState::Completed,
-                        error_code: None,
-                    }).await;
+                    // the lease alive and eventually retry work already completed. A freeform post
+                    // (delivery_id: None) has no lease to close.
+                    if let Some(delivery_id) = delivery_id {
+                        routing.deliveries.lock().await.remove(&seat_id);
+                        client.send(ClientCommand::DeliveryState {
+                            delivery_id,
+                            state: DeliveryState::Completed,
+                            error_code: None,
+                        }).await;
+                    }
                     IpcResponse::ok(id, serde_json::json!({ "message_id": message_id }))
                 }
                 Ok(Err(e)) => IpcResponse::err(id, format!("hub rejected the reply: {e}")),
@@ -463,6 +481,14 @@ async fn handle_ipc_request(
             // room_id from. Skipping either would leave a redeemed seat unable to act.
             client.register_seat(seat.id).await;
             routing.rooms.lock().await.insert(seat.id, seat.room_id);
+            // Persist the binding so a node restart does not orphan the seat.
+            {
+                let mut st = state.lock().await;
+                st.redeemed_seats.insert(seat.id, seat.room_id);
+                if let Err(e) = st.save(state_path) {
+                    tracing::warn!(error = %e, "could not persist redeemed seat; it will not survive a restart");
+                }
+            }
             IpcResponse::ok(id, serde_json::json!({ "seat": seat }))
         }
         IpcRequest::ApprovalVerdict { .. } => {
@@ -679,6 +705,10 @@ mod tests {
     use citadel_protocol::PROTOCOL_VERSION;
     use tokio::sync::mpsc;
 
+    fn test_state() -> Arc<Mutex<NodeState>> {
+        Arc::new(Mutex::new(NodeState::default()))
+    }
+
     /// A `HubTransport` double that answers `node.hello` with `hello.accepted` and any
     /// `node.query` carrying `redeem_invite` with a canned `query.result` seat (or, when
     /// configured, a canned hub refusal). No socket and no external fixture — this exercises
@@ -813,7 +843,7 @@ mod tests {
         };
         let resp = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            handle_ipc_request(req, &client, &routing),
+            handle_ipc_request(req, &client, &routing, &test_state(), std::path::Path::new("/dev/null")),
         ).await.expect("redeem_invite must not hang");
 
         assert!(resp.ok, "expected ok, got error {:?}", resp.error);
@@ -844,7 +874,7 @@ mod tests {
         };
         let resp = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            handle_ipc_request(req, &client, &routing),
+            handle_ipc_request(req, &client, &routing, &test_state(), std::path::Path::new("/dev/null")),
         ).await.expect("redeem_invite must not hang");
 
         assert!(!resp.ok);

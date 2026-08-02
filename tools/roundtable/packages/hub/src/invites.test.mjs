@@ -334,3 +334,19 @@ test('node.query redeem_invite broadcasts the same seat.presence event operators
     }
   });
 });
+
+test('redeem_invite resumes a detached seat with the same alias on the same node', () => {
+  const store = Store.open(':memory:');
+  const room = store.createRoom({ slug: 'resume', title: 'Resume' });
+  const node = store.registerNode({ name: 'win', tokenHash: Store.hashNodeToken('t') });
+  const first = store.createInvite({ roomId: room.id });
+  const seat = store.redeemInvite({ code: first.code, nodeId: node.id, alias: 'claude', provider: 'claude', sessionRef: 's1' });
+  store.detachSeat(seat.id);
+
+  const second = store.createInvite({ roomId: room.id });
+  const resumed = store.redeemInvite({ code: second.code, nodeId: node.id, alias: 'claude', provider: 'claude', sessionRef: 's2' });
+  assert.equal(resumed.id, seat.id, 'same seat row is resumed, not duplicated');
+  assert.equal(resumed.state, 'idle');
+  assert.equal(resumed.session_ref, 's2');
+  store.close();
+});

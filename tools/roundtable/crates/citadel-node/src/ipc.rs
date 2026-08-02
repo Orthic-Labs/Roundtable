@@ -68,10 +68,14 @@ pub enum IpcRequest {
         limit: i64,
     },
     TranscriptSearch { room_id: Uuid, query: String, limit: i64 },
+    /// `delivery_id` is None for a freeform post from an owned seat (e.g. the Claude channel's
+    /// roundtable_reply, which speaks in a room without having been woken by a delivery).
     MessageReply {
         seat_id: Uuid,
-        delivery_id: Uuid,
+        #[serde(default)]
+        delivery_id: Option<Uuid>,
         body: String,
+        #[serde(default = "default_reply_kind")]
         kind: String,
     },
     HandoffCreate {
@@ -90,6 +94,8 @@ pub enum IpcRequest {
     ApprovalVerdict { approval_id: Uuid, decision: String },
     Ping { nonce: String },
 }
+
+fn default_reply_kind() -> String { "chat".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcResponse {
