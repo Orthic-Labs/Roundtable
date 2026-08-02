@@ -181,8 +181,24 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); box-sh
 .room-header h1 { margin: 0; font: 400 20px/1.15 var(--font-display); letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .room-slug { font: 500 11px/1 var(--font-mono); color: var(--accent); letter-spacing: .05em; flex: none; }
 .room-header .objective { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
-.seat-rail { display: flex; margin-left: auto; gap: 8px; flex-wrap: wrap; justify-content: flex-end; flex: none; max-width: 45%; }
-.seat-rail span { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font: 500 12px var(--font-mono); }
+/* Cockpit strip: seats + quick actions in one compact row under the header. Chips stay small —
+   identity at a glance, controls on hover — and the transcript keeps the full width below. */
+.seat-strip { display: flex; align-items: center; gap: 8px; padding: 8px 22px 10px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.seat-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px 4px 5px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font: 500 12px var(--font-mono); flex: none; }
+.seat-chip .av { width: 19px; height: 19px; border-radius: 50%; font-size: 10px; margin: 0; }
+.seat-chip .chip-x { display: none; }
+.seat-chip:hover .chip-x { display: inline-grid; }
+.chip-x { border: 0; background: transparent; color: var(--muted); padding: 0 2px; font-size: 13px; line-height: 1; cursor: pointer; place-items: center; }
+.chip-x:hover { color: var(--bad); }
+.strip-btn { flex: none; padding: 4px 12px; border: 1px dashed var(--border); border-radius: 999px; background: transparent; color: var(--muted); font: 500 12px var(--font-body); }
+.strip-btn.invite { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); color: var(--accent); }
+.strip-btn:hover { border-style: solid; }
+.drawer-toggle { margin-left: auto; }
+.drawer-toggle.alert { border-color: color-mix(in srgb, var(--warn) 60%, var(--border)); color: var(--warn); border-style: solid; }
+.invite-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 8px 4px 12px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); border-radius: 999px; background: var(--accent-soft); flex: none; min-width: 0; }
+.invite-chip code { font: 600 11.5px var(--font-mono); color: var(--accent); }
+.invite-chip small { color: var(--muted); font: 10px var(--font-mono); white-space: nowrap; }
+.invite-chip > button:not(.chip-x) { padding: 2px 9px; font-size: 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--raised); color: var(--text); }
 
 /* presence dots */
 .presence { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); transition: background var(--dur1) var(--ease), transform var(--dur1) var(--ease); }
@@ -192,9 +208,9 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); box-sh
 
 .offline { padding: 9px 22px; border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); font-size: 13px; }
 
-/* Rail scales with the viewport instead of pinning at 320px — on a wide monitor the panels
-   get real room and stop growing an internal scrollbar while the transcript sits empty. */
-.room-main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 27vw, 480px); min-height: 0; }
+/* Transcript owns the full width; the drawer takes a column only while open. */
+.room-main { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.room-main.with-drawer { grid-template-columns: minmax(0, 1fr) clamp(320px, 27vw, 480px); }
 
 /* ---- Transcript ----------------------------------------------------------- */
 .transcript { padding: 20px 22px; overflow: auto; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
@@ -298,7 +314,8 @@ details summary { cursor: pointer; color: var(--muted); font: 500 12px var(--fon
   .workspace { grid-template-columns: 1fr; }
   .room-list { border-right: 0; border-bottom: 1px solid var(--border); max-height: 230px; }
   .room-header { flex-direction: column; align-items: stretch; gap: 8px; }
-  .seat-rail { margin-left: 0; justify-content: flex-start; max-width: none; }
+  .seat-strip { padding: 8px 14px 10px; }
+  .room-main.with-drawer { grid-template-columns: 1fr; }
   .room-main { grid-template-columns: 1fr; }
   .transcript { min-height: 55vh; padding: 14px; }
   .turn { max-width: 94%; }

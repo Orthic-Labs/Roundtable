@@ -9,6 +9,39 @@ function formatExpiry(expiresAtMs: number): string {
   return `${Math.round(deltaMin / 60)}h left`;
 }
 
+/** One-click invite for the seat strip: mints on press, shows the code + copy inline until
+ * dismissed. The full list/revoke management stays in the drawer's InvitePanel. */
+export function InviteQuick({ roomId }: { roomId: string }) {
+  const [code, setCode] = useState<string>();
+  const [expiresAt, setExpiresAt] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState(false);
+
+  const create = async () => {
+    setPending(true); setError(false); setCopied(false);
+    try {
+      const invite = await api.createInvite(roomId);
+      setCode(invite.code); setExpiresAt(invite.expires_at_ms);
+      // The code lands on the clipboard the moment it exists — the chip is confirmation and
+      // re-copy, not a required second step.
+      try { await navigator.clipboard.writeText(invite.code); setCopied(true); } catch { /* user copies manually */ }
+    } catch { setError(true); }
+    finally { setPending(false); }
+  };
+  const copy = async () => { if (!code) return; await navigator.clipboard.writeText(code); setCopied(true); };
+
+  if (code) return <span className="invite-chip">
+    <code>{code}</code>
+    <button type="button" onClick={copy} aria-label="Copy invite code">{copied ? 'Copied' : 'Copy'}</button>
+    <small>{formatExpiry(expiresAt)} · run citadel_join with this code</small>
+    <button type="button" className="chip-x" aria-label="Dismiss invite code" onClick={() => setCode(undefined)}>×</button>
+  </span>;
+  return <button type="button" className="strip-btn invite" onClick={create} disabled={pending}>
+    {pending ? 'Creating…' : error ? 'Retry invite' : '+ Invite agent'}
+  </button>;
+}
+
 /** "Invite an agent" — lives inside the Seats panel next to Attach session. Lazy: the invite list
  * loads only when the section is opened, so mounting SeatPanel never fires a network call. */
 export function InvitePanel({ roomId }: { roomId: string }) {
