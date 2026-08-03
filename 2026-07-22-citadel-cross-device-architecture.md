@@ -458,7 +458,7 @@ Cancellation is operator-only (Adrian via `room cancel <delivery_id>` from the w
 **Locked manifests:**
 
 - Rust workspace members: `crates/*`; resolver `2`.
-- JS workspace members: `packages/*`; `packageManager: pnpm@11.12.0`.
+- JS workspace members: `packages/*`; `packageManager: pnpm@11.18.0`.
 - Root `package.json` scripts are exactly `"test": "pnpm -r --if-present test"` and `"build": "pnpm -r --if-present build"`.
 - Hub and node share `citadel-protocol`; only hub uses `citadel-store`.
 - Web uses React 19, React DOM 19, Vite 8, TypeScript 6, Vitest, Testing Library, and `@vitejs/plugin-react`.
