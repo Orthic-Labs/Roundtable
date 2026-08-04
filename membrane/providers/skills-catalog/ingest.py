@@ -133,6 +133,103 @@ def build_catalog(root: Path, scope: str = "skills") -> dict:
     return payload
 
 
+def _skill_texts(root: Path) -> dict[str, str]:
+    """skill_name -> raw SKILL.md text, for the frontmatter/body checks below."""
+    out: dict[str, str] = {}
+    for mode, path in _tracked_files(root):
+        rel = path[len(SKILLS_PREFIX):]
+        if "/" not in rel or not rel.endswith("/SKILL.md"):
+            continue
+        skill_name = rel.split("/", 1)[0]
+        abs_path = (root / path).resolve()
+        if root not in abs_path.parents:
+            continue
+        try:
+            out[skill_name] = abs_path.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+    return out
+
+
+def _may_call_skills(text: str) -> list[str]:
+    """Parse a `MAY_CALL_SKILLS: a,b,c` / `MAY_CALL_SKILLS: NONE` control line from a SKILL.md
+    body. Absent line -> []. `NONE` (any case) -> []. Comma-separated names are trimmed."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.upper().startswith("MAY_CALL_SKILLS:"):
+            continue
+        value = stripped.split(":", 1)[1].strip()
+        if not value or value.upper() == "NONE":
+            return []
+        return [name.strip() for name in value.split(",") if name.strip()]
+    return []
+
+
+def _eval_skill_references(root: Path) -> list[tuple[str, str]]:
+    """(eval file path, referenced skill name) for every `"skill": "<name>"` field found in
+    tools/evals/**/*.json — the mechanism an eval uses to say which skill a case belongs to."""
+    evals_dir = root / "tools" / "evals"
+    if not evals_dir.is_dir():
+        return []
+    refs: list[tuple[str, str]] = []
+    for path in sorted(evals_dir.rglob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        rel = str(path.relative_to(root))
+
+        def _walk(node: object) -> None:
+            if isinstance(node, dict):
+                skill = node.get("skill")
+                if isinstance(skill, str) and skill:
+                    refs.append((rel, skill))
+                for value in node.values():
+                    _walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(data)
+    return refs
+
+
+def validate_catalog(root: Path, payload: dict) -> list[str]:
+    """Deterministic catalog-integrity checks that go beyond "does it build". Returns a list of
+    human-readable violations; an empty list means the catalog is safe to write.
+
+    Scoped to what this codebase's design actually makes checkable: the tracked-file walk in
+    build_catalog() already IS the skill registry (there is no separate registry to diverge
+    from, and dirs without a SKILL.md — `_shared/`, `_audit/` — are legitimately not skills, per
+    test_skill_without_tracked_skillmd_is_not_a_skill). What CAN silently drift is other files
+    referencing a skill name by string: an eval case naming a retired skill, or a skill's own
+    MAY_CALL_SKILLS declaring a callee that no longer exists. Both are exactly the adapt-ghost
+    failure class (a name outlives the thing it names) applied to string references instead of
+    the crypt-engine catalog row.
+    """
+    known = {s["name"] for s in payload["skills"]}
+    violations: list[str] = []
+
+    for eval_path, referenced in _eval_skill_references(root):
+        if referenced not in known:
+            violations.append(
+                f"eval references removed skill: {eval_path} names skill={referenced!r}, "
+                "which is not in the catalog"
+            )
+
+    for skill_name, text in sorted(_skill_texts(root).items()):
+        if skill_name not in known:
+            continue  # this skill dir itself isn't tracked as a skill; not this check's job
+        for callee in _may_call_skills(text):
+            if callee not in known:
+                violations.append(
+                    f"MAY_CALL_SKILLS references removed skill: {skill_name}/SKILL.md names "
+                    f"skill={callee!r}, which is not in the catalog"
+                )
+
+    return violations
+
+
 def write_catalog(payload: dict, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     # Byte-stable: sorted keys, trailing newline, LF.
@@ -153,8 +250,17 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--scope", default="skills")
     ap.add_argument("--out", default=None)
     ap.add_argument("--print", action="store_true")
+    ap.add_argument("--skip-validate", action="store_true", help="skip cross-reference checks (validate_catalog)")
     args = ap.parse_args(argv)
-    payload = build_catalog(Path(args.root), scope=args.scope)
+    root = Path(args.root)
+    payload = build_catalog(root, scope=args.scope)
+    if not args.skip_validate:
+        violations = validate_catalog(root, payload)
+        if violations:
+            for v in violations:
+                print(f"[error] {v}", file=sys.stderr)
+            print(f"catalog build failed: {len(violations)} integrity violation(s)", file=sys.stderr)
+            return 1
     if args.out:
         write_catalog(payload, Path(args.out))
         print(f"catalog: {len(payload['skills'])} skills, generation {payload['generationHash'][:12]} -> {args.out}")

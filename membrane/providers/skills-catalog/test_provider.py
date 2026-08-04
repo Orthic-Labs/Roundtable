@@ -6,7 +6,18 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+
+
+def _find_workspace_root(start: Path) -> Path | None:
+    """See test_ingest.py's copy of this — same fix, same reason: a fixed parent-hop count
+    silently breaks the next time this provider moves."""
+    for candidate in [start, *start.parents]:
+        if (candidate / "tools" / "hooks" / "recall_planner.py").is_file():
+            return candidate
+    return None
+
+
+ROOT = _find_workspace_root(HERE)
 
 
 def _load(name: str, path: Path):
@@ -19,7 +30,9 @@ def _load(name: str, path: Path):
 
 ingest = _load("skills_ingest", HERE / "ingest.py")
 provider = _load("skills_provider", HERE / "provider.py")
-recall_planner = _load("recall_planner", ROOT / "tools" / "hooks" / "recall_planner.py")
+recall_planner = (
+    _load("recall_planner", ROOT / "tools" / "hooks" / "recall_planner.py") if ROOT else None
+)
 
 # Labeled task -> expected skill (drawn from real, obvious intents). The gate: expected skill in
 # the provider's top-3 for >= 13/15. A miss means the lexical baseline loses to the router and must

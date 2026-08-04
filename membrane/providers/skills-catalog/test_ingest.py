@@ -8,17 +8,32 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]  # workspace root (…/tools/skills/skills-catalog → root)
+
+
+def _find_workspace_root(start: Path) -> Path | None:
+    """Walk upward for the marker this test's cross-repo check actually needs. Not a fixed
+    parent-hop count: this provider now lives inside the citadel submodule
+    (citadel/membrane/providers/skills-catalog), which is nested at a different depth than
+    the pre-move location (tools/skills/skills-catalog) the old hardcoded ../../.. assumed —
+    exactly the class of bug a hop count silently reintroduces on the next move."""
+    for candidate in [start, *start.parents]:
+        if (candidate / "tools" / "hooks" / "recall_planner.py").is_file():
+            return candidate
+    return None
+
+
+ROOT = _find_workspace_root(HERE)
 
 _spec = importlib.util.spec_from_file_location("skills_ingest", HERE / "ingest.py")
 ingest = importlib.util.module_from_spec(_spec)
 sys.modules["skills_ingest"] = ingest
 _spec.loader.exec_module(ingest)
 
-_rp_spec = importlib.util.spec_from_file_location("recall_planner", ROOT / "tools" / "hooks" / "recall_planner.py")
-recall_planner = importlib.util.module_from_spec(_rp_spec)
-sys.modules["recall_planner"] = recall_planner
-_rp_spec.loader.exec_module(recall_planner)
+if ROOT is not None:
+    _rp_spec = importlib.util.spec_from_file_location("recall_planner", ROOT / "tools" / "hooks" / "recall_planner.py")
+    recall_planner = importlib.util.module_from_spec(_rp_spec)
+    sys.modules["recall_planner"] = recall_planner
+    _rp_spec.loader.exec_module(recall_planner)
 
 
 def _git(root: Path, *args: str) -> None:
@@ -51,6 +66,9 @@ def test_catalog_is_deterministic(tmp_path):
 
 
 def test_bodyhash_matches_resolver_audit():
+    if ROOT is None:
+        import pytest
+        pytest.skip("workspace root (tools/hooks/recall_planner.py) not found — citadel checked out standalone")
     # The catalog's bodyHash MUST equal what the delivery verifier re-derives, or a real skill
     # would be rejected at delivery. Checked against the live repo's `brief` skill.
     catalog = ingest.build_catalog(ROOT)
@@ -85,3 +103,42 @@ def test_skill_without_tracked_skillmd_is_not_a_skill(tmp_path):
     _git(root, "add", "-A")
     names = [s["name"] for s in ingest.build_catalog(root)["skills"]]
     assert "notaskill" not in names
+
+
+def test_validate_catalog_passes_on_a_healthy_repo(tmp_path):
+    root = _tmp_repo(tmp_path)
+    payload = ingest.build_catalog(root)
+    assert ingest.validate_catalog(root, payload) == []
+
+
+def test_validate_catalog_fails_when_an_eval_references_a_removed_skill(tmp_path):
+    root = _tmp_repo(tmp_path)
+    _write(
+        root / "tools" / "evals" / "cases" / "demo-cases.json",
+        b'{"skill": "demo", "cases": [{"skill": "retired-skill", "prompt": "x"}]}\n',
+    )
+    payload = ingest.build_catalog(root)
+    violations = ingest.validate_catalog(root, payload)
+    assert any("retired-skill" in v and "eval references removed skill" in v for v in violations)
+
+
+def test_validate_catalog_fails_when_may_call_skills_names_a_removed_skill(tmp_path):
+    root = _tmp_repo(tmp_path)
+    skill = root / "tools" / "skills" / "demo" / "SKILL.md"
+    skill.write_bytes(
+        b"---\nname: demo\ndescription: A demo skill for testing catalog ingest here.\n"
+        b"---\n# Demo\nMAY_CALL_SKILLS: retired-skill,also-gone\nbody\n"
+    )
+    _git(root, "add", "-A")
+    payload = ingest.build_catalog(root)
+    violations = ingest.validate_catalog(root, payload)
+    assert any("retired-skill" in v and "MAY_CALL_SKILLS" in v for v in violations)
+    assert any("also-gone" in v for v in violations)
+
+
+def test_validate_catalog_allows_may_call_skills_none(tmp_path):
+    root = _tmp_repo(tmp_path)
+    payload = ingest.build_catalog(root)
+    # the fixture's demo skill has no MAY_CALL_SKILLS line at all -- must not be treated as a
+    # violation (absent line means "not declared", same as an explicit NONE).
+    assert ingest.validate_catalog(root, payload) == []
