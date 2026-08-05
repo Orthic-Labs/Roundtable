@@ -2,7 +2,7 @@
 // The SQLite schema and the PWA types intentionally differ on a few fields; every HTTP/WS
 // response passes through here so the two sides cannot drift silently again.
 
-/** Sentinel stored in events.target_node_id for browser-only replay. */
+/** Forge stored in events.target_node_id for browser-only replay. */
 export const OPERATOR_TARGET = '__operator__';
 
 export function toRoom(row) {
